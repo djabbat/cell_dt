@@ -5,6 +5,7 @@ members = [
     "crates/cell_dt_io",
     "crates/cell_dt_python",
     "crates/cell_dt_viz",
+    "crates/cell_dt_config",
     "crates/cell_dt_modules/cell_cycle_module",
     "crates/cell_dt_modules/centriole_module",
     "crates/cell_dt_modules/transcriptome_module",

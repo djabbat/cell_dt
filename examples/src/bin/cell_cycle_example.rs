@@ -35,13 +35,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let centriole_module = CentrioleModule::with_parallel(true);
     sim.register_module(Box::new(centriole_module))?;
     
-    // Регистрируем модуль клеточного цикла
+    // Регистрируем модуль клеточного цикла со ВСЕМИ полями
     let cell_cycle_params = CellCycleParams {
         base_cycle_time: 24.0,
         growth_factor_sensitivity: 1.0,
         stress_sensitivity: 0.8,
         checkpoint_strictness: 0.9,
         enable_apoptosis: true,
+        nutrient_availability: 0.9,
+        growth_factor_level: 0.8,
+        random_variation: 0.2,
     };
     let cell_cycle_module = CellCycleModule::with_params(cell_cycle_params);
     sim.register_module(Box::new(cell_cycle_module))?;
@@ -183,11 +186,4 @@ fn print_final_stats(sim: &SimulationManager) {
         println!("Average cycles completed: {:.2}", total_cycles as f32 / total_cells as f32);
     }
     println!("Maximum cycles: {}", max_cycles);
-    
-    // Детальная статистика по нескольким клеткам
-    println!("\n=== Sample Cell States ===");
-    for (i, (_, cycle)) in query.iter().take(5).enumerate() {
-        println!("Cell {}: Phase {:?}, Progress {:.2}, Cycles {}, Checkpoint {:?}", 
-                 i, cycle.phase, cycle.progress, cycle.cycle_count, cycle.current_checkpoint);
-    }
 }

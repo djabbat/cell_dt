@@ -10,8 +10,11 @@ centriole_module = { path = "../crates/cell_dt_modules/centriole_module" }
 cell_cycle_module = { path = "../crates/cell_dt_modules/cell_cycle_module" }
 transcriptome_module = { path = "../crates/cell_dt_modules/transcriptome_module" }
 cell_dt_viz = { path = "../crates/cell_dt_viz" }
+cell_dt_io = { path = "../crates/cell_dt_io" }
+cell_dt_config = { path = "../crates/cell_dt_config" }
 env_logger.workspace = true
 rand.workspace = true
+serde_json.workspace = true
 
 [[bin]]
 name = "simple_simulation"
@@ -30,9 +33,21 @@ name = "cell_cycle_example"
 path = "src/bin/cell_cycle_example.rs"
 
 [[bin]]
+name = "cell_cycle_advanced"
+path = "src/bin/cell_cycle_advanced.rs"
+
+[[bin]]
 name = "cell_cycle_ultra_soft"
 path = "src/bin/cell_cycle_ultra_soft.rs"
 
 [[bin]]
 name = "transcriptome_example"
 path = "src/bin/transcriptome_example.rs"
+
+[[bin]]
+name = "io_example"
+path = "src/bin/io_example.rs"
+
+[[bin]]
+name = "config_example"
+path = "src/bin/config_example.rs"

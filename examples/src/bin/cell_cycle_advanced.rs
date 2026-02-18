@@ -12,16 +12,16 @@ use cell_dt_viz::{
 };
 use rand::Rng;
 use std::io::Write;
+use std::collections::HashMap;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Cell DT Platform - Advanced Cell Cycle Module ===\n");
     
     std::fs::create_dir_all("cell_cycle_output")?;
     
-    // Настраиваем параметры для более активного клеточного цикла
     let config = SimulationConfig {
         max_steps: 2000,
-        dt: 0.05,  // Меньший шаг для более точной симуляции
+        dt: 0.05,
         checkpoint_interval: 200,
         num_threads: Some(4),
         seed: Some(42),
@@ -36,21 +36,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let centriole_module = CentrioleModule::with_parallel(true);
     sim.register_module(Box::new(centriole_module))?;
     
-    // Регистрируем модуль клеточного цикла с мягкими параметрами
+    // Регистрируем модуль клеточного цикла со ВСЕМИ полями
     let cell_cycle_params = CellCycleParams {
         base_cycle_time: 20.0,
         growth_factor_sensitivity: 0.3,
         stress_sensitivity: 0.2,
-        checkpoint_strictness: 0.2,  // Очень мягкие контрольные точки
+        checkpoint_strictness: 0.2,
         enable_apoptosis: true,
-        nutrient_availability: 0.95,  // Много питательных веществ
-        growth_factor_level: 0.9,      // Много факторов роста
+        nutrient_availability: 0.95,
+        growth_factor_level: 0.9,
+        random_variation: 0.3,
     };
     
     println!("📊 Cell Cycle Parameters:");
     println!("   Checkpoint strictness: {:.2}", cell_cycle_params.checkpoint_strictness);
     println!("   Growth factors: {:.2}", cell_cycle_params.growth_factor_level);
     println!("   Nutrients: {:.2}", cell_cycle_params.nutrient_availability);
+    println!("   Random variation: {:.2}", cell_cycle_params.random_variation);
     
     let cell_cycle_module = CellCycleModule::with_params(cell_cycle_params);
     sim.register_module(Box::new(cell_cycle_module))?;
@@ -66,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data_history = viz_manager.data_history.clone();
     viz_manager.add_visualizer(Box::new(TimeSeriesVisualizer::new("cell_cycle_output/timeseries", data_history)));
     
-    println!("\n🚀 Starting simulation with real cell cycle biology...");
+    println!("\n🚀 Starting simulation with advanced cell cycle...");
     println!("   Output will be saved to ./cell_cycle_output/\n");
     
     sim.initialize()?;
@@ -74,7 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for step in 0..max_steps {
         sim.step()?;
         
-        if step % 50 == 0 {
+        if step % 100 == 0 {
             viz_manager.update(sim.world(), sim.current_step(), sim.current_time())?;
             print_progress(step, max_steps, &sim);
         }
@@ -131,7 +133,7 @@ fn print_progress(step: u64, max_steps: u64, sim: &SimulationManager) {
     let mut arrested = 0;
     let mut total_cycles = 0;
     let mut total_cells = 0;
-    let mut checkpoint_types = std::collections::HashMap::new();
+    let mut checkpoint_types = HashMap::new();
     
     for (_, cycle) in query.iter() {
         total_cells += 1;
@@ -172,7 +174,7 @@ fn print_final_stats(sim: &SimulationManager) {
     let mut max_cycles = 0;
     let mut phase_counts = [0; 4];
     let mut arrested = 0;
-    let mut cycle_distribution = std::collections::HashMap::new();
+    let mut cycle_distribution = HashMap::new();
     
     for (_, cycle) in query.iter() {
         total_cells += 1;
@@ -202,11 +204,4 @@ fn print_final_stats(sim: &SimulationManager) {
         println!("Average cycles completed: {:.2}", total_cycles as f32 / total_cells as f32);
     }
     println!("Maximum cycles: {}", max_cycles);
-    
-    println!("\n=== Cycle Distribution ===");
-    let mut cycles: Vec<_> = cycle_distribution.into_iter().collect();
-    cycles.sort();
-    for (cycles, count) in cycles {
-        println!("  {} cycles: {} cells", cycles, count);
-    }
 }
