@@ -31,3 +31,13 @@ bincode = "1.3"
 anyhow = "1.0"
 rand = "0.8"
 crossbeam = "0.8"
+
+[package]
+authors = ["Jaba Tkemaladze"]
+description = "High-performance platform for simulating cell differentiation"
+homepage = "https://github.com/djabbat/cell_dt"
+repository = "https://github.com/djabbat/cell_dt"
+readme = "README.md"
+keywords = ["simulation", "biology", "cell", "centriole", "ecs"]
+categories = ["science", "simulation"]
+license = "MIT OR Apache-2.0"

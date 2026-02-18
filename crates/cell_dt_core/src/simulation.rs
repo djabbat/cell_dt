@@ -5,7 +5,6 @@ use crate::{
 use std::collections::HashMap;
 use std::time::Instant;
 use log::{info, debug, warn};
-use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub struct SimulationConfig {
@@ -36,7 +35,6 @@ pub struct SimulationManager {
     config: SimulationConfig,
     current_step: u64,
     current_time: f64,
-    module_execution_times: Arc<Mutex<HashMap<String, Vec<std::time::Duration>>>>,
 }
 
 impl SimulationManager {
@@ -58,7 +56,6 @@ impl SimulationManager {
             config,
             current_step: 0,
             current_time: 0.0,
-            module_execution_times: Arc::new(Mutex::new(HashMap::new())),
         }
     }
     
@@ -92,33 +89,14 @@ impl SimulationManager {
             return Ok(());
         }
         
-        let step_start = Instant::now();
         let dt = self.config.dt;
         
         for (name, module) in self.modules.iter_mut() {
-            debug!("Executing module: {} at step {}", name, self.current_step);
-            
-            let module_start = Instant::now();
             module.step(&mut self.world, dt)?;
-            
-            let module_time = module_start.elapsed();
-            
-            if let Ok(mut times) = self.module_execution_times.lock() {
-                times.entry(name.to_string())
-                    .or_insert_with(Vec::new)
-                    .push(module_time);
-            }
-            
-            if module_time.as_millis() > 100 {
-                warn!("Module {} took {:?}", name, module_time);
-            }
         }
         
         self.current_step += 1;
         self.current_time += dt;
-        
-        let step_time = step_start.elapsed();
-        debug!("Step {} completed in {:?}", self.current_step, step_time);
         
         Ok(())
     }
@@ -136,33 +114,12 @@ impl SimulationManager {
         
         while self.current_step < self.config.max_steps {
             self.step()?;
-            
-            if self.config.checkpoint_interval > 0 && 
-               self.current_step % self.config.checkpoint_interval == 0 {
-                info!("Checkpoint at step {}", self.current_step);
-            }
         }
         
         let total_time = start_time.elapsed();
         info!("Simulation completed in {:?}. Final time: {}", total_time, self.current_time);
         
-        self.print_performance_stats();
-        
         Ok(())
-    }
-    
-    fn print_performance_stats(&self) {
-        if let Ok(times) = self.module_execution_times.lock() {
-            info!("\n=== Performance Statistics ===");
-            for (module_name, durations) in times.iter() {
-                if !durations.is_empty() {
-                    let total: std::time::Duration = durations.iter().sum();
-                    let avg = total / durations.len() as u32;
-                    info!("Module {}: {} calls, total {:?}, avg {:?}", 
-                          module_name, durations.len(), total, avg);
-                }
-            }
-        }
     }
     
     pub fn world(&self) -> &World {
@@ -183,5 +140,58 @@ impl SimulationManager {
     
     pub fn config(&self) -> &SimulationConfig {
         &self.config
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::*;
+    
+    struct TestModule;
+    
+    impl SimulationModule for TestModule {
+        fn name(&self) -> &str { "test_module" }
+        fn step(&mut self, _world: &mut World, _dt: f64) -> SimulationResult<()> { Ok(()) }
+        fn get_params(&self) -> serde_json::Value { serde_json::json!({}) }
+        fn set_params(&mut self, _params: &serde_json::Value) -> SimulationResult<()> { Ok(()) }
+    }
+
+    #[test]
+    fn test_simulation_manager_new() {
+        let config = SimulationConfig::default();
+        let sim = SimulationManager::new(config);
+        assert_eq!(sim.current_step(), 0);
+        assert_eq!(sim.current_time(), 0.0);
+    }
+
+    #[test]
+    fn test_register_module() {
+        let config = SimulationConfig::default();
+        let mut sim = SimulationManager::new(config);
+        
+        let result = sim.register_module(Box::new(TestModule));
+        assert!(result.is_ok());
+        
+        // Попытка зарегистрировать тот же модуль должна вернуть ошибку
+        let result2 = sim.register_module(Box::new(TestModule));
+        assert!(result2.is_err());
+    }
+
+    #[test]
+    fn test_step_increment() {
+        let config = SimulationConfig {
+            max_steps: 10,
+            dt: 0.5,
+            ..Default::default()
+        };
+        
+        let mut sim = SimulationManager::new(config);
+        
+        for i in 0..5 {
+            sim.step().unwrap();
+            assert_eq!(sim.current_step(), i + 1);
+            assert_eq!(sim.current_time(), (i + 1) as f64 * 0.5);
+        }
     }
 }
