@@ -7,9 +7,18 @@ publish = false
 [dependencies]
 cell_dt_core = { path = "../crates/cell_dt_core" }
 centriole_module = { path = "../crates/cell_dt_modules/centriole_module" }
+cell_dt_viz = { path = "../crates/cell_dt_viz" }
 env_logger.workspace = true
 rand.workspace = true
 
 [[bin]]
+name = "simple_simulation"
+path = "src/bin/simple_simulation.rs"
+
+[[bin]]
 name = "performance_test"
 path = "src/bin/performance_test.rs"
+
+[[bin]]
+name = "viz_example"
+path = "src/bin/viz_example.rs"

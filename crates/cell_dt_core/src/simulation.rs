@@ -180,4 +180,8 @@ impl SimulationManager {
     pub fn current_time(&self) -> f64 {
         self.current_time
     }
+    
+    pub fn config(&self) -> &SimulationConfig {
+        &self.config
+    }
 }

@@ -4,6 +4,7 @@ members = [
     "crates/cell_dt_core",
     "crates/cell_dt_io",
     "crates/cell_dt_python",
+    "crates/cell_dt_viz",
     "crates/cell_dt_modules/cell_cycle_module",
     "crates/cell_dt_modules/centriole_module",
     "crates/cell_dt_modules/transcriptome_module",
@@ -13,7 +14,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["Your Name <email@example.com>"]
+authors = ["Jaba Tkemaladze"]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
@@ -28,3 +29,4 @@ ndarray = "0.15"
 bincode = "1.3"
 anyhow = "1.0"
 rand = "0.8"
+crossbeam = "0.8"
