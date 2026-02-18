@@ -1,0 +1,11 @@
+[package]
+name = "examples"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+cell_dt_core = { path = "../crates/cell_dt_core" }
+centriole_module = { path = "../crates/cell_dt_modules/centriole_module" }
+env_logger.workspace = true
+rand.workspace = true
