@@ -9,6 +9,8 @@ members = [
     "crates/cell_dt_modules/cell_cycle_module",
     "crates/cell_dt_modules/centriole_module",
     "crates/cell_dt_modules/transcriptome_module",
+    "crates/cell_dt_modules/asymmetric_division_module",
+    "crates/cell_dt_modules/stem_cell_hierarchy_module",
     "examples",
 ]
 
@@ -31,13 +33,3 @@ bincode = "1.3"
 anyhow = "1.0"
 rand = "0.8"
 crossbeam = "0.8"
-
-[package]
-authors = ["Jaba Tkemaladze"]
-description = "High-performance platform for simulating cell differentiation"
-homepage = "https://github.com/djabbat/cell_dt"
-repository = "https://github.com/djabbat/cell_dt"
-readme = "README.md"
-keywords = ["simulation", "biology", "cell", "centriole", "ecs"]
-categories = ["science", "simulation"]
-license = "MIT OR Apache-2.0"

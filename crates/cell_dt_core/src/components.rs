@@ -270,3 +270,25 @@ mod tests {
         assert_eq!(ptm.oxidation_level, 0.0);
     }
 }
+
+impl CellCycleStateExtended {
+    /// Получить активность конкретного комплекса
+    pub fn get_complex_activity(&self, cyclin_type: CyclinType, cdk_type: CdkType) -> f32 {
+        for complex in &self.cyclin_cdk_complexes {
+            if complex.cyclin_type == cyclin_type && complex.cdk_type == cdk_type {
+                return complex.activity;
+            }
+        }
+        0.0
+    }
+    
+    /// Учет влияния центриоли (заглушка)
+    pub fn apply_centriole_influence(&mut self, _centriole: &CentriolePair) {
+        // Будет реализовано позже
+    }
+    
+    /// Обновление циклинов (заглушка)
+    pub fn update_cyclins(&mut self, _dt: f32) {
+        // Будет реализовано позже
+    }
+}
