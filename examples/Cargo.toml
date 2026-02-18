@@ -8,6 +8,7 @@ publish = false
 cell_dt_core = { path = "../crates/cell_dt_core" }
 centriole_module = { path = "../crates/cell_dt_modules/centriole_module" }
 cell_cycle_module = { path = "../crates/cell_dt_modules/cell_cycle_module" }
+transcriptome_module = { path = "../crates/cell_dt_modules/transcriptome_module" }
 cell_dt_viz = { path = "../crates/cell_dt_viz" }
 env_logger.workspace = true
 rand.workspace = true
@@ -29,9 +30,9 @@ name = "cell_cycle_example"
 path = "src/bin/cell_cycle_example.rs"
 
 [[bin]]
-name = "cell_cycle_advanced"
-path = "src/bin/cell_cycle_advanced.rs"
-
-[[bin]]
 name = "cell_cycle_ultra_soft"
 path = "src/bin/cell_cycle_ultra_soft.rs"
+
+[[bin]]
+name = "transcriptome_example"
+path = "src/bin/transcriptome_example.rs"
