@@ -5,6 +5,7 @@ use crate::{
 use std::collections::HashMap;
 use std::time::Instant;
 use log::{info, debug, warn};
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub struct SimulationConfig {
@@ -13,6 +14,7 @@ pub struct SimulationConfig {
     pub checkpoint_interval: u64,
     pub num_threads: Option<usize>,
     pub seed: Option<u64>,
+    pub parallel_modules: bool,
 }
 
 impl Default for SimulationConfig {
@@ -23,6 +25,7 @@ impl Default for SimulationConfig {
             checkpoint_interval: 100,
             num_threads: None,
             seed: Some(42),
+            parallel_modules: false,
         }
     }
 }
@@ -33,6 +36,7 @@ pub struct SimulationManager {
     config: SimulationConfig,
     current_step: u64,
     current_time: f64,
+    module_execution_times: Arc<Mutex<HashMap<String, Vec<std::time::Duration>>>>,
 }
 
 impl SimulationManager {
@@ -54,6 +58,7 @@ impl SimulationManager {
             config,
             current_step: 0,
             current_time: 0.0,
+            module_execution_times: Arc::new(Mutex::new(HashMap::new())),
         }
     }
     
@@ -97,6 +102,13 @@ impl SimulationManager {
             module.step(&mut self.world, dt)?;
             
             let module_time = module_start.elapsed();
+            
+            if let Ok(mut times) = self.module_execution_times.lock() {
+                times.entry(name.to_string())
+                    .or_insert_with(Vec::new)
+                    .push(module_time);
+            }
+            
             if module_time.as_millis() > 100 {
                 warn!("Module {} took {:?}", name, module_time);
             }
@@ -117,23 +129,40 @@ impl SimulationManager {
         info!(
             "Starting simulation: {} steps, dt = {}", 
             self.config.max_steps, 
-            self.config.dt
+            self.config.dt,
         );
         
         let start_time = Instant::now();
         
         while self.current_step < self.config.max_steps {
             self.step()?;
+            
+            if self.config.checkpoint_interval > 0 && 
+               self.current_step % self.config.checkpoint_interval == 0 {
+                info!("Checkpoint at step {}", self.current_step);
+            }
         }
         
         let total_time = start_time.elapsed();
-        info!(
-            "Simulation completed in {:?}. Final time: {}", 
-            total_time, 
-            self.current_time
-        );
+        info!("Simulation completed in {:?}. Final time: {}", total_time, self.current_time);
+        
+        self.print_performance_stats();
         
         Ok(())
+    }
+    
+    fn print_performance_stats(&self) {
+        if let Ok(times) = self.module_execution_times.lock() {
+            info!("\n=== Performance Statistics ===");
+            for (module_name, durations) in times.iter() {
+                if !durations.is_empty() {
+                    let total: std::time::Duration = durations.iter().sum();
+                    let avg = total / durations.len() as u32;
+                    info!("Module {}: {} calls, total {:?}, avg {:?}", 
+                          module_name, durations.len(), total, avg);
+                }
+            }
+        }
     }
     
     pub fn world(&self) -> &World {

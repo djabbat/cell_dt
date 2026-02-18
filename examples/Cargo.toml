@@ -9,3 +9,7 @@ cell_dt_core = { path = "../crates/cell_dt_core" }
 centriole_module = { path = "../crates/cell_dt_modules/centriole_module" }
 env_logger.workspace = true
 rand.workspace = true
+
+[[bin]]
+name = "performance_test"
+path = "src/bin/performance_test.rs"
