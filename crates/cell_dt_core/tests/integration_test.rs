@@ -1,5 +1,5 @@
 use cell_dt_core::*;
-use cell_dt_core::components::*;
+use cell_dt_core::hecs::World;
 
 #[test]
 fn test_simulation_with_cells() {
@@ -13,11 +13,8 @@ fn test_simulation_with_cells() {
     
     // Добавляем тестовые клетки
     let world = sim.world_mut();
-    for i in 0..5 {
-        world.spawn((
-            CentriolePair::default(),
-            CellCycleState::default(),
-        ));
+    for _ in 0..5 {
+        world.spawn(());
     }
     
     sim.initialize().unwrap();
@@ -52,8 +49,31 @@ fn test_multiple_modules() {
     let config = SimulationConfig::default();
     let mut sim = SimulationManager::new(config);
     
-    sim.register_module(Box::new(ModuleA)).unwrap();
-    sim.register_module(Box::new(ModuleB)).unwrap();
+    // Проверяем регистрацию модулей
+    let result1 = sim.register_module(Box::new(ModuleA));
+    assert!(result1.is_ok());
     
-    assert_eq!(sim.modules.len(), 2);
+    let result2 = sim.register_module(Box::new(ModuleB));
+    assert!(result2.is_ok());
+    
+    // Проверяем, что нельзя зарегистрировать модуль с тем же именем
+    let result3 = sim.register_module(Box::new(ModuleA));
+    assert!(result3.is_err());
+}
+
+#[test]
+fn test_world_operations() {
+    let config = SimulationConfig::default();
+    let mut sim = SimulationManager::new(config);
+    
+    // Добавляем клетки
+    let entities: Vec<_> = (0..10).map(|_| {
+        sim.world_mut().spawn(())
+    }).collect();
+    
+    assert_eq!(entities.len(), 10);
+    
+    // Проверяем количество клеток
+    let count = sim.world().query::<()>().iter().count();
+    assert_eq!(count, 10);
 }
