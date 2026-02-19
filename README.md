@@ -2,15 +2,15 @@
 # Cell DT Platform
 
 ## 🚀 Quick Start
-```
+
 Launch the GUI
 ~/cell_dt/crates/cell_dt_gui
 cargo run
-```
+
 Or via the launcher
 ~/cell_dt
 ./cell_dt_launcher.sh gui
-```
+
 ## 📋 Table of Contents
 1. [Overview](#overview)
 2. [Architecture](#architecture)
