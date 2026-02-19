@@ -1,4 +1,3 @@
-```markdown
 # Cell DT Platform
 
 ## 🚀 Quick Start
