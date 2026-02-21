@@ -10,14 +10,14 @@ use std::collections::VecDeque;
 
 // ==================== DATA STRUCTURES ====================
 
-/// Application state
+/// Application state — does NOT contain history (stored in ConfigApp to avoid recursive cloning)
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ConfigAppState {
     // Main parameters
     pub config_file: String,
     pub config_format: String,
     pub simulation: SimulationConfig,
-    
+
     // Modules
     pub centriole: CentrioleConfig,
     pub cell_cycle: CellCycleConfig,
@@ -26,7 +26,7 @@ pub struct ConfigAppState {
     pub stem_hierarchy: StemHierarchyConfig,
     pub io: IOConfig,
     pub viz: VisualizationConfig,
-    
+
     // UI state
     pub selected_tab: Tab,
     pub show_save_dialog: bool,
@@ -36,20 +36,14 @@ pub struct ConfigAppState {
     pub show_validation_dialog: bool,
     pub message: Option<String>,
     pub validation_errors: Vec<String>,
-    
-    // History (simplified version without self-references)
-    pub history_states: VecDeque<ConfigAppState>,
-    pub history_index: usize,
-    pub max_history: usize,
-    
+
     // Real-time visualization
     pub realtime_viz: RealtimeVisualization,
 }
 
 impl Default for ConfigAppState {
     fn default() -> Self {
-        let mut states = VecDeque::new();
-        let default_state = Self {
+        Self {
             config_file: "config.toml".to_string(),
             config_format: "toml".to_string(),
             simulation: SimulationConfig::default(),
@@ -68,65 +62,8 @@ impl Default for ConfigAppState {
             show_validation_dialog: false,
             message: None,
             validation_errors: Vec::new(),
-            history_states: VecDeque::new(),
-            history_index: 0,
-            max_history: 50,
             realtime_viz: RealtimeVisualization::default(),
-        };
-        states.push_back(default_state.clone());
-        
-        Self {
-            history_states: states,
-            history_index: 0,
-            max_history: 50,
-            ..default_state
         }
-    }
-}
-
-impl ConfigAppState {
-    pub fn push_history(&mut self) {
-        // Remove states ahead of current index
-        while self.history_states.len() > self.history_index + 1 {
-            self.history_states.pop_back();
-        }
-        
-        // Add current state to history
-        self.history_states.push_back(self.clone());
-        
-        // Limit history size
-        while self.history_states.len() > self.max_history {
-            self.history_states.pop_front();
-            self.history_index = self.history_index.saturating_sub(1);
-        }
-        
-        self.history_index = self.history_states.len() - 1;
-    }
-    
-    pub fn undo(&mut self) -> Option<ConfigAppState> {
-        if self.history_index > 0 {
-            self.history_index -= 1;
-            Some(self.history_states[self.history_index].clone())
-        } else {
-            None
-        }
-    }
-    
-    pub fn redo(&mut self) -> Option<ConfigAppState> {
-        if self.history_index + 1 < self.history_states.len() {
-            self.history_index += 1;
-            Some(self.history_states[self.history_index].clone())
-        } else {
-            None
-        }
-    }
-    
-    pub fn can_undo(&self) -> bool {
-        self.history_index > 0
-    }
-    
-    pub fn can_redo(&self) -> bool {
-        self.history_index + 1 < self.history_states.len()
     }
 }
 
@@ -136,6 +73,10 @@ impl ConfigAppState {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RealtimeVisualization {
     pub enabled: bool,
+    /// Whether snapshot capture is actively running (must be started manually)
+    pub is_running: bool,
+    /// Wall-clock time of the last snapshot (seconds, from egui ctx.input time)
+    pub last_snapshot_time: f64,
     pub parameter_history: VecDeque<ParameterSnapshot>,
     pub max_history: usize,
     pub selected_parameters: Vec<String>,
@@ -151,6 +92,8 @@ impl Default for RealtimeVisualization {
     fn default() -> Self {
         Self {
             enabled: false,
+            is_running: false,
+            last_snapshot_time: 0.0,
             parameter_history: VecDeque::new(),
             max_history: 100,
             selected_parameters: vec![
@@ -165,15 +108,15 @@ impl Default for RealtimeVisualization {
 impl RealtimeVisualization {
     pub fn add_snapshot(&mut self, values: std::collections::HashMap<String, f64>, time: f64) {
         self.parameter_history.push_back(ParameterSnapshot { time, values });
-        
+
         while self.parameter_history.len() > self.max_history {
             self.parameter_history.pop_front();
         }
     }
-    
+
     pub fn extract_values(state: &ConfigAppState) -> std::collections::HashMap<String, f64> {
         let mut values = std::collections::HashMap::new();
-        
+
         values.insert("simulation.max_steps".to_string(), state.simulation.max_steps as f64);
         values.insert("simulation.dt".to_string(), state.simulation.dt);
         values.insert("centriole.acetylation_rate".to_string(), state.centriole.acetylation_rate as f64);
@@ -182,7 +125,7 @@ impl RealtimeVisualization {
         values.insert("cell_cycle.checkpoint_strictness".to_string(), state.cell_cycle.checkpoint_strictness as f64);
         values.insert("transcriptome.mutation_rate".to_string(), state.transcriptome.mutation_rate as f64);
         values.insert("asymmetric.asymmetric_probability".to_string(), state.asymmetric.asymmetric_probability as f64);
-        
+
         values
     }
 }
@@ -195,7 +138,7 @@ pub struct ParameterValidator;
 impl ParameterValidator {
     pub fn validate_all(state: &ConfigAppState) -> Vec<String> {
         let mut errors = Vec::new();
-        
+
         // Simulation
         if state.simulation.max_steps == 0 {
             errors.push("❌ Number of steps must be greater than 0".to_string());
@@ -206,7 +149,7 @@ impl ParameterValidator {
         if state.simulation.dt > 1.0 {
             errors.push("⚠️ Time step > 1.0 may cause instability".to_string());
         }
-        
+
         // Centriole
         if state.centriole.enabled {
             if state.centriole.acetylation_rate < 0.0 || state.centriole.acetylation_rate > 0.1 {
@@ -216,7 +159,7 @@ impl ParameterValidator {
                 errors.push("❌ Oxidation rate must be in range [0, 0.1]".to_string());
             }
         }
-        
+
         // Cell cycle
         if state.cell_cycle.enabled {
             if state.cell_cycle.base_cycle_time <= 0.0 {
@@ -226,18 +169,18 @@ impl ParameterValidator {
                 errors.push("❌ Checkpoint strictness must be in [0, 1]".to_string());
             }
         }
-        
+
         // Transcriptome
         if state.transcriptome.enabled {
             if state.transcriptome.mutation_rate < 0.0 || state.transcriptome.mutation_rate > 0.1 {
                 errors.push("❌ Mutation rate must be in [0, 0.1]".to_string());
             }
         }
-        
+
         // Asymmetric division
         if state.asymmetric.enabled {
-            let sum = state.asymmetric.asymmetric_probability + 
-                     state.asymmetric.renewal_probability + 
+            let sum = state.asymmetric.asymmetric_probability +
+                     state.asymmetric.renewal_probability +
                      state.asymmetric.diff_probability;
             if (sum - 1.0).abs() > 0.01 {
                 errors.push("⚠️ Sum of division probabilities should be ~1.0".to_string());
@@ -246,10 +189,10 @@ impl ParameterValidator {
                 errors.push("❌ Niche capacity must be > 0".to_string());
             }
         }
-        
+
         errors
     }
-    
+
     pub fn is_valid(state: &ConfigAppState) -> bool {
         Self::validate_all(state).is_empty()
     }
@@ -361,18 +304,18 @@ pub struct PythonExporter;
 impl PythonExporter {
     pub fn generate_script(state: &ConfigAppState) -> String {
         let mut script = String::new();
-        
+
         script.push_str("#!/usr/bin/env python3\n");
         script.push_str("# -*- coding: utf-8 -*-\n");
         script.push_str("\"\"\"\n");
         script.push_str("Automatically generated script for Cell DT\n");
         script.push_str("Usage: python3 script.py\n");
         script.push_str("\"\"\"\n\n");
-        
+
         script.push_str("import cell_dt\n");
         script.push_str("import numpy as np\n");
         script.push_str("import matplotlib.pyplot as plt\n\n");
-        
+
         // Simulation setup
         script.push_str("# Simulation setup\n");
         script.push_str(&format!("sim = cell_dt.PySimulation(\n"));
@@ -381,7 +324,7 @@ impl PythonExporter {
         script.push_str(&format!("    num_threads={},\n", state.simulation.num_threads.unwrap_or(1)));
         script.push_str(&format!("    seed={}\n", state.simulation.seed.unwrap_or(42)));
         script.push_str(")\n\n");
-        
+
         // Create cells
         script.push_str("# Create cells\n");
         if state.transcriptome.enabled {
@@ -390,7 +333,7 @@ impl PythonExporter {
             script.push_str("sim.create_population(100)\n");
         }
         script.push_str("\n");
-        
+
         // Cell cycle parameters
         if state.cell_cycle.enabled {
             script.push_str("# Cell cycle parameters\n");
@@ -405,7 +348,7 @@ impl PythonExporter {
         } else {
             script.push_str("cell_cycle_params = None\n\n");
         }
-        
+
         // Register modules
         script.push_str("# Register modules\n");
         script.push_str(&format!("sim.register_modules(\n"));
@@ -414,28 +357,28 @@ impl PythonExporter {
         script.push_str(&format!("    enable_transcriptome={},\n", state.transcriptome.enabled));
         script.push_str("    cell_cycle_params=cell_cycle_params\n");
         script.push_str(")\n\n");
-        
+
         // Run simulation
         script.push_str("# Run simulation\n");
         script.push_str("print(\"🚀 Starting simulation...\")\n");
         script.push_str("cells = sim.run()\n");
         script.push_str("print(f\"✅ Simulation completed in {sim.current_step()} steps\")\n\n");
-        
+
         // Analyze results
         script.push_str("# Analyze results\n");
         script.push_str("print(f\"\\nTotal cells: {len(cells)}\")\n\n");
-        
+
         script.push_str("# Get centriole data\n");
         script.push_str("centriole_data = sim.get_centriole_data_numpy()\n");
         script.push_str("if len(centriole_data) > 0:\n");
         script.push_str("    print(f\"Average mother centriole maturity: {np.mean(centriole_data[:, 0]):.3f}\")\n\n");
-        
+
         script.push_str("# Phase distribution\n");
         script.push_str("phase_dist = sim.get_phase_distribution()\n");
         script.push_str("print(\"\\nPhase distribution:\")\n");
         script.push_str("for phase, count in phase_dist.items():\n");
         script.push_str("    print(f\"  {phase}: {count}\")\n\n");
-        
+
         script.push_str("# Visualization\n");
         script.push_str("if len(phase_dist) > 0:\n");
         script.push_str("    plt.figure(figsize=(10, 6))\n");
@@ -445,7 +388,7 @@ impl PythonExporter {
         script.push_str("    plt.ylabel('Number of Cells')\n");
         script.push_str("    plt.savefig('phase_distribution.png')\n");
         script.push_str("    plt.show()\n");
-        
+
         script
     }
 }
@@ -589,84 +532,213 @@ impl Default for VisualizationConfig {
 
 pub struct ConfigApp {
     state: ConfigAppState,
+
+    // History — stored here (not in ConfigAppState) to avoid recursive/exponential cloning
+    history_states: VecDeque<ConfigAppState>,
+    history_index: usize,
+    max_history: usize,
+
+    // Simulation run state (UI-only, not serialized with config)
+    simulation_running: bool,
+    simulation_step: u64,
+    simulation_start_time: Option<f64>,
+
+    // Cached Python export script — regenerated only when dialog opens
+    cached_export_script: Option<String>,
 }
 
 impl ConfigApp {
     pub fn new() -> Self {
+        let state = ConfigAppState::default();
+        let mut history = VecDeque::new();
+        history.push_back(state.clone());
         Self {
-            state: ConfigAppState::default(),
+            state,
+            history_states: history,
+            history_index: 0,
+            max_history: 50,
+            simulation_running: false,
+            simulation_step: 0,
+            simulation_start_time: None,
+            cached_export_script: None,
         }
+    }
+
+    fn push_history(&mut self) {
+        // Discard any redo states ahead of current index
+        while self.history_states.len() > self.history_index + 1 {
+            self.history_states.pop_back();
+        }
+        self.history_states.push_back(self.state.clone());
+        while self.history_states.len() > self.max_history {
+            self.history_states.pop_front();
+            self.history_index = self.history_index.saturating_sub(1);
+        }
+        self.history_index = self.history_states.len() - 1;
+    }
+
+    fn undo(&mut self) {
+        if self.history_index > 0 {
+            self.history_index -= 1;
+            self.state = self.history_states[self.history_index].clone();
+        }
+    }
+
+    fn redo(&mut self) {
+        if self.history_index + 1 < self.history_states.len() {
+            self.history_index += 1;
+            self.state = self.history_states[self.history_index].clone();
+        }
+    }
+
+    fn can_undo(&self) -> bool {
+        self.history_index > 0
+    }
+
+    fn can_redo(&self) -> bool {
+        self.history_index + 1 < self.history_states.len()
     }
 }
 
 impl eframe::App for ConfigApp {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
+        // Advance mock simulation tick when running
+        if self.simulation_running {
+            let max_steps = self.state.simulation.max_steps as u64;
+            if self.simulation_step < max_steps {
+                self.simulation_step = (self.simulation_step + 100).min(max_steps);
+            }
+            if self.simulation_step >= max_steps {
+                self.simulation_running = false;
+                self.state.message = Some("✅ Simulation complete!".to_string());
+            }
+            ctx.request_repaint();
+        }
+
         // Top panel
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("🧬 Cell DT - Simulation Configurator");
                 ui.separator();
-                
+
                 // History buttons
-                ui.add_enabled_ui(self.state.can_undo(), |ui| {
+                ui.add_enabled_ui(self.can_undo(), |ui| {
                     if ui.button("↩️ Undo").clicked() {
-                        if let Some(prev_state) = self.state.undo() {
-                            self.state = prev_state;
-                        }
+                        self.undo();
                     }
                 });
-                
-                ui.add_enabled_ui(self.state.can_redo(), |ui| {
+
+                ui.add_enabled_ui(self.can_redo(), |ui| {
                     if ui.button("↪️ Redo").clicked() {
-                        if let Some(next_state) = self.state.redo() {
-                            self.state = next_state;
-                        }
+                        self.redo();
                     }
                 });
-                
+
                 ui.separator();
-                
+
                 if ui.button("📂 Load").clicked() {
                     self.state.show_load_dialog = true;
                 }
-                
+
                 if ui.button("💾 Save").clicked() {
                     self.state.show_save_dialog = true;
                 }
-                
+
                 if ui.button("📋 Presets").clicked() {
                     self.state.show_preset_dialog = true;
                 }
-                
+
                 if ui.button("🐍 Export to Python").clicked() {
+                    // Generate once on open, cache until dialog closes
+                    self.cached_export_script = Some(PythonExporter::generate_script(&self.state));
                     self.state.show_export_dialog = true;
                 }
-                
+
                 if ui.button("✓ Validate").clicked() {
                     self.state.validation_errors = ParameterValidator::validate_all(&self.state);
                     self.state.show_validation_dialog = true;
                 }
-                
+
                 ui.separator();
-                
+
+                // Run / Stop simulation button
+                if self.simulation_running {
+                    if ui.button(
+                        egui::RichText::new("⏹ Stop")
+                            .color(egui::Color32::from_rgb(220, 80, 80))
+                            .strong()
+                    ).clicked() {
+                        self.simulation_running = false;
+                        self.state.message = Some("⏹ Simulation stopped".to_string());
+                    }
+                } else {
+                    if ui.button(
+                        egui::RichText::new("▶ Run Simulation")
+                            .color(egui::Color32::from_rgb(80, 200, 120))
+                            .strong()
+                    ).clicked() {
+                        self.simulation_running = true;
+                        self.simulation_step = 0;
+                        self.simulation_start_time = Some(ctx.input(|i| i.time));
+                        self.state.message = Some("🔄 Simulation running...".to_string());
+                    }
+                }
+
+                ui.separator();
+
                 if ui.button("❌ Exit").clicked() {
                     std::process::exit(0);
                 }
             });
-            
-            if let Some(msg) = &self.state.message {
-                ui.horizontal(|ui| {
+
+            // Status strip — always visible below the button row
+            ui.horizontal(|ui| {
+                if self.simulation_running {
+                    let elapsed = self.simulation_start_time
+                        .map(|t| ctx.input(|i| i.time) - t)
+                        .unwrap_or(0.0);
+                    let max_steps = self.state.simulation.max_steps as f64;
+                    let fraction = if max_steps > 0.0 {
+                        (self.simulation_step as f64 / max_steps).min(1.0) as f32
+                    } else {
+                        0.0
+                    };
+                    let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                    let spinner = spinner_frames[
+                        (ctx.input(|i| i.time) as usize) % spinner_frames.len()
+                    ];
+                    ui.colored_label(
+                        egui::Color32::YELLOW,
+                        format!(
+                            "{} Running — step {} / {}  ({:.0}s elapsed)",
+                            spinner, self.simulation_step, self.state.simulation.max_steps, elapsed
+                        ),
+                    );
+                    ui.add(
+                        egui::ProgressBar::new(fraction)
+                            .desired_width(160.0)
+                            .show_percentage(),
+                    );
+                } else if self.simulation_step > 0 {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(80, 200, 120),
+                        format!("✓ Stopped — {} / {} steps completed",
+                            self.simulation_step, self.state.simulation.max_steps),
+                    );
+                } else if let Some(msg) = &self.state.message {
                     ui.label(format!("Status: {}", msg));
-                });
-            }
+                } else {
+                    ui.colored_label(egui::Color32::GRAY, "● Idle — ready to run");
+                }
+            });
         });
-        
+
         // Left panel with tabs
         egui::SidePanel::left("left_panel").show(ctx, |ui| {
             ui.vertical(|ui| {
                 ui.heading("Modules");
                 ui.separator();
-                
+
                 let tabs = [
                     Tab::Simulation,
                     Tab::Centriole,
@@ -677,56 +749,76 @@ impl eframe::App for ConfigApp {
                     Tab::IO,
                     Tab::Visualization,
                 ];
-                
+
                 for tab in tabs {
                     if ui.selectable_value(&mut self.state.selected_tab, tab, tab.name()).clicked() {
-                        self.state.push_history();
+                        self.push_history();
                     }
                 }
             });
         });
-        
+
         // Right panel with real-time visualization
         egui::SidePanel::right("right_panel").show(ctx, |ui| {
             ui.vertical(|ui| {
                 ui.heading("📈 Real-time Visualization");
                 ui.separator();
-                
+
                 ui.checkbox(&mut self.state.realtime_viz.enabled, "Enable");
-                
+
                 if self.state.realtime_viz.enabled {
-                    // Extract values and add snapshot
-                    let values = RealtimeVisualization::extract_values(&self.state);
-                    self.state.realtime_viz.add_snapshot(values, 0.0);
-                    
-                    // Display graphs
-                    for param in &self.state.realtime_viz.selected_parameters {
-                        ui.label(format!("📊 {}", param));
-                        
-                        // Collect data for graph
-                        let mut values = Vec::new();
-                        for snapshot in &self.state.realtime_viz.parameter_history {
-                            if let Some(value) = snapshot.values.get(param) {
-                                values.push(*value);
+                    ui.horizontal(|ui| {
+                        if self.state.realtime_viz.is_running {
+                            if ui.button(
+                                egui::RichText::new("⏹ Stop")
+                                    .color(egui::Color32::from_rgb(220, 80, 80))
+                            ).clicked() {
+                                self.state.realtime_viz.is_running = false;
+                            }
+                        } else {
+                            if ui.button(
+                                egui::RichText::new("▶ Start")
+                                    .color(egui::Color32::from_rgb(80, 200, 120))
+                            ).clicked() {
+                                self.state.realtime_viz.is_running = true;
                             }
                         }
-                        
-                        if !values.is_empty() {
-                            // Simple line graph
+                    });
+
+                    if self.state.realtime_viz.is_running {
+                        // Rate-limit: at most one snapshot per second
+                        let current_time = ctx.input(|i| i.time);
+                        if current_time - self.state.realtime_viz.last_snapshot_time >= 1.0 {
+                            let values = RealtimeVisualization::extract_values(&self.state);
+                            self.state.realtime_viz.add_snapshot(values, current_time);
+                            self.state.realtime_viz.last_snapshot_time = current_time;
+                        }
+                    }
+
+                    // Display current values
+                    let selected_params = self.state.realtime_viz.selected_parameters.clone();
+                    for param in &selected_params {
+                        ui.label(format!("📊 {}", param));
+
+                        let values: Vec<f64> = self.state.realtime_viz.parameter_history
+                            .iter()
+                            .filter_map(|s| s.values.get(param).copied())
+                            .collect();
+
+                        if let Some(last) = values.last() {
                             ui.horizontal(|ui| {
-                                ui.label(format!("Current: {:.3}", values.last().unwrap()));
+                                ui.label(format!("Current: {:.3}", last));
                             });
                         }
                     }
-                    
+
                     ui.collapsing("⚙️ Settings", |ui| {
                         ui.label("Select parameters to display:");
-                        // Here you can add checkboxes for parameter selection
                     });
                 }
             });
         });
-        
+
         // Central panel
         CentralPanel::default().show(ctx, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
@@ -740,26 +832,93 @@ impl eframe::App for ConfigApp {
                     Tab::IO => self.show_io_tab(ui),
                     Tab::Visualization => self.show_visualization_tab(ui),
                 }
+
+                ui.separator();
+
+                // Simulation status section
+                ui.collapsing("🔄 Simulation Status", |ui| {
+                    let max_steps = self.state.simulation.max_steps as f64;
+                    let fraction = if max_steps > 0.0 {
+                        (self.simulation_step as f64 / max_steps).min(1.0) as f32
+                    } else {
+                        0.0
+                    };
+
+                    let (status_text, status_color) = if self.simulation_running {
+                        ("● Running", egui::Color32::YELLOW)
+                    } else if self.simulation_step > 0 {
+                        ("● Stopped", egui::Color32::from_rgb(80, 200, 120))
+                    } else {
+                        ("● Idle", egui::Color32::GRAY)
+                    };
+
+                    ui.colored_label(status_color, status_text);
+
+                    ui.add(
+                        egui::ProgressBar::new(fraction)
+                            .text(format!(
+                                "{} / {}",
+                                self.simulation_step,
+                                self.state.simulation.max_steps
+                            ))
+                            .desired_width(300.0),
+                    );
+
+                    if let Some(start_time) = self.simulation_start_time {
+                        let elapsed = ctx.input(|i| i.time) - start_time;
+                        ui.label(format!("Elapsed: {:.1}s", elapsed));
+                    }
+
+                    ui.horizontal(|ui| {
+                        if self.simulation_running {
+                            if ui.button(
+                                egui::RichText::new("⏹ Stop")
+                                    .color(egui::Color32::from_rgb(220, 80, 80))
+                            ).clicked() {
+                                self.simulation_running = false;
+                                self.state.message = Some("⏹ Simulation stopped".to_string());
+                            }
+                        } else {
+                            if ui.button(
+                                egui::RichText::new("▶ Run Simulation")
+                                    .color(egui::Color32::from_rgb(80, 200, 120))
+                            ).clicked() {
+                                self.simulation_running = true;
+                                self.simulation_step = 0;
+                                self.simulation_start_time = Some(ctx.input(|i| i.time));
+                                self.state.message = Some("🔄 Simulation running...".to_string());
+                            }
+                        }
+
+                        if !self.simulation_running && self.simulation_step > 0 {
+                            if ui.button("🔄 Reset").clicked() {
+                                self.simulation_step = 0;
+                                self.simulation_start_time = None;
+                                self.state.message = None;
+                            }
+                        }
+                    });
+                });
             });
         });
-        
+
         // Dialogs
         if self.state.show_save_dialog {
             self.show_save_dialog(ctx);
         }
-        
+
         if self.state.show_load_dialog {
             self.show_load_dialog(ctx);
         }
-        
+
         if self.state.show_preset_dialog {
             self.show_preset_dialog(ctx);
         }
-        
+
         if self.state.show_export_dialog {
             self.show_export_dialog(ctx);
         }
-        
+
         if self.state.show_validation_dialog {
             self.show_validation_dialog(ctx);
         }
@@ -772,46 +931,46 @@ impl ConfigApp {
     fn show_simulation_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("⚙️ Main Simulation Parameters");
         ui.separator();
-        
+
         ui.horizontal(|ui| {
             ui.label("Number of steps:");
             if ui.add(Slider::new(&mut self.state.simulation.max_steps, 1..=1_000_000)).changed() {
-                self.state.push_history();
+                self.push_history();
             }
         });
-        
+
         ui.horizontal(|ui| {
             ui.label("Time step (dt):");
             if ui.add(Slider::new(&mut self.state.simulation.dt, 0.001..=1.0).logarithmic(true)).changed() {
-                self.state.push_history();
+                self.push_history();
             }
         });
-        
+
         ui.horizontal(|ui| {
             ui.label("Checkpoint interval:");
             if ui.add(Slider::new(&mut self.state.simulation.checkpoint_interval, 1..=10_000)).changed() {
-                self.state.push_history();
+                self.push_history();
             }
         });
-        
+
         ui.horizontal(|ui| {
             ui.label("Number of threads:");
             let mut threads = self.state.simulation.num_threads.unwrap_or(1);
             if ui.add(Slider::new(&mut threads, 1..=64)).changed() {
                 self.state.simulation.num_threads = Some(threads);
-                self.state.push_history();
+                self.push_history();
             }
         });
-        
+
         ui.horizontal(|ui| {
             ui.label("Random seed:");
             let mut seed = self.state.simulation.seed.unwrap_or(42);
             if ui.add(Slider::new(&mut seed, 0..=999_999)).changed() {
                 self.state.simulation.seed = Some(seed);
-                self.state.push_history();
+                self.push_history();
             }
         });
-        
+
         ui.horizontal(|ui| {
             ui.label("Output directory:");
             let output_str = self.state.simulation.output_dir.to_string_lossy().to_string();
@@ -819,236 +978,240 @@ impl ConfigApp {
             if ui.text_edit_singleline(&mut output).changed() {
                 if output != output_str {
                     self.state.simulation.output_dir = PathBuf::from(output);
-                    self.state.push_history();
+                    self.push_history();
                 }
             }
         });
-        
+
         if ui.checkbox(&mut self.state.simulation.parallel_modules, "Parallel module execution").changed() {
-            self.state.push_history();
+            self.push_history();
         }
     }
-    
+
     fn show_centriole_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("🔬 Centriole Module");
         ui.separator();
-        
+
         if ui.checkbox(&mut self.state.centriole.enabled, "Enable module").changed() {
-            self.state.push_history();
+            self.push_history();
         }
-        
+
         if self.state.centriole.enabled {
             ui.horizontal(|ui| {
                 ui.label("Acetylation rate:");
                 if ui.add(Slider::new(&mut self.state.centriole.acetylation_rate, 0.0..=0.1)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
-            
+
             ui.horizontal(|ui| {
                 ui.label("Oxidation rate:");
                 if ui.add(Slider::new(&mut self.state.centriole.oxidation_rate, 0.0..=0.1)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
-            
+
             if ui.checkbox(&mut self.state.centriole.parallel_cells, "Parallel cell processing").changed() {
-                self.state.push_history();
+                self.push_history();
             }
         }
     }
-    
+
     fn show_cell_cycle_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("🔄 Cell Cycle Module");
         ui.separator();
-        
+
         if ui.checkbox(&mut self.state.cell_cycle.enabled, "Enable module").changed() {
-            self.state.push_history();
+            self.push_history();
         }
-        
+
         if self.state.cell_cycle.enabled {
             ui.horizontal(|ui| {
                 ui.label("Base cycle duration:");
                 if ui.add(Slider::new(&mut self.state.cell_cycle.base_cycle_time, 1.0..=100.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
-            
+
             ui.horizontal(|ui| {
                 ui.label("Checkpoint strictness:");
                 if ui.add(Slider::new(&mut self.state.cell_cycle.checkpoint_strictness, 0.0..=1.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
-            
+
             if ui.checkbox(&mut self.state.cell_cycle.enable_apoptosis, "Enable apoptosis").changed() {
-                self.state.push_history();
+                self.push_history();
             }
-            
+
             ui.horizontal(|ui| {
                 ui.label("Nutrient availability:");
                 if ui.add(Slider::new(&mut self.state.cell_cycle.nutrient_availability, 0.0..=1.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
-            
+
             ui.horizontal(|ui| {
                 ui.label("Growth factor level:");
                 if ui.add(Slider::new(&mut self.state.cell_cycle.growth_factor_level, 0.0..=1.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
-            
+
             ui.horizontal(|ui| {
                 ui.label("Random variation:");
                 if ui.add(Slider::new(&mut self.state.cell_cycle.random_variation, 0.0..=1.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
         }
     }
-    
+
     fn show_transcriptome_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("🧬 Transcriptome Module");
         ui.separator();
-        
+
         if ui.checkbox(&mut self.state.transcriptome.enabled, "Enable module").changed() {
-            self.state.push_history();
+            self.push_history();
         }
-        
+
         if self.state.transcriptome.enabled {
             ui.horizontal(|ui| {
                 ui.label("Mutation rate:");
                 if ui.add(Slider::new(&mut self.state.transcriptome.mutation_rate, 0.0..=0.01).logarithmic(true)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
-            
+
             ui.horizontal(|ui| {
                 ui.label("Noise level:");
                 if ui.add(Slider::new(&mut self.state.transcriptome.noise_level, 0.0..=0.5)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
         }
     }
-    
+
     fn show_asymmetric_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("⚖️ Asymmetric Division Module");
         ui.separator();
-        
+
         if ui.checkbox(&mut self.state.asymmetric.enabled, "Enable module").changed() {
-            self.state.push_history();
+            self.push_history();
         }
-        
+
         if self.state.asymmetric.enabled {
             ui.horizontal(|ui| {
                 ui.label("Asymmetric division probability:");
                 if ui.add(Slider::new(&mut self.state.asymmetric.asymmetric_probability, 0.0..=1.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
-            
+
             ui.horizontal(|ui| {
                 ui.label("Self-renewal probability:");
                 if ui.add(Slider::new(&mut self.state.asymmetric.renewal_probability, 0.0..=1.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
-            
+
             ui.horizontal(|ui| {
                 ui.label("Differentiation probability:");
                 if ui.add(Slider::new(&mut self.state.asymmetric.diff_probability, 0.0..=1.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
-            
+
             ui.horizontal(|ui| {
                 ui.label("Niche capacity:");
                 if ui.add(Slider::new(&mut self.state.asymmetric.niche_capacity, 1..=100)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
-            
+
             ui.horizontal(|ui| {
                 ui.label("Maximum niches:");
                 if ui.add(Slider::new(&mut self.state.asymmetric.max_niches, 1..=1000)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
-            
+
             if ui.checkbox(&mut self.state.asymmetric.enable_polarity, "Enable polarity").changed() {
-                self.state.push_history();
+                self.push_history();
             }
-            
+
             if ui.checkbox(&mut self.state.asymmetric.enable_fate_determinants, "Enable fate determinants").changed() {
-                self.state.push_history();
+                self.push_history();
             }
         }
     }
-    
+
     fn show_stem_hierarchy_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("🌱 Stem Cell Hierarchy Module");
         ui.separator();
-        
+
         if ui.checkbox(&mut self.state.stem_hierarchy.enabled, "Enable module").changed() {
-            self.state.push_history();
+            self.push_history();
         }
-        
+
         if self.state.stem_hierarchy.enabled {
+            let old_potency = self.state.stem_hierarchy.initial_potency.clone();
             ui.horizontal(|ui| {
                 ui.label("Initial potency level:");
                 ComboBox::from_id_source("potency")
                     .selected_text(&self.state.stem_hierarchy.initial_potency)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.state.stem_hierarchy.initial_potency, 
+                        ui.selectable_value(&mut self.state.stem_hierarchy.initial_potency,
                             "Totipotent".to_string(), "Totipotent");
-                        ui.selectable_value(&mut self.state.stem_hierarchy.initial_potency, 
+                        ui.selectable_value(&mut self.state.stem_hierarchy.initial_potency,
                             "Pluripotent".to_string(), "Pluripotent");
-                        ui.selectable_value(&mut self.state.stem_hierarchy.initial_potency, 
+                        ui.selectable_value(&mut self.state.stem_hierarchy.initial_potency,
                             "Multipotent".to_string(), "Multipotent");
-                        ui.selectable_value(&mut self.state.stem_hierarchy.initial_potency, 
+                        ui.selectable_value(&mut self.state.stem_hierarchy.initial_potency,
                             "Differentiated".to_string(), "Differentiated");
                     });
-                self.state.push_history();
             });
-            
-            if ui.checkbox(&mut self.state.stem_hierarchy.enable_plasticity, "Enable plasticity").changed() {
-                self.state.push_history();
+            if self.state.stem_hierarchy.initial_potency != old_potency {
+                self.push_history();
             }
-            
+
+            if ui.checkbox(&mut self.state.stem_hierarchy.enable_plasticity, "Enable plasticity").changed() {
+                self.push_history();
+            }
+
             ui.horizontal(|ui| {
                 ui.label("Plasticity rate:");
                 if ui.add(Slider::new(&mut self.state.stem_hierarchy.plasticity_rate, 0.0..=0.1).logarithmic(true)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
-            
+
             ui.horizontal(|ui| {
                 ui.label("Differentiation threshold:");
                 if ui.add(Slider::new(&mut self.state.stem_hierarchy.differentiation_threshold, 0.0..=1.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
         }
     }
-    
+
     fn show_io_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("💾 I/O Module");
         ui.separator();
-        
+
         if ui.checkbox(&mut self.state.io.enabled, "Enable module").changed() {
-            self.state.push_history();
+            self.push_history();
         }
-        
+
         if self.state.io.enabled {
             ui.horizontal(|ui| {
                 ui.label("Output directory:");
                 if ui.text_edit_singleline(&mut self.state.io.output_dir).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
-            
+
+            let old_format = self.state.io.format.clone();
             ui.horizontal(|ui| {
                 ui.label("Format:");
                 ComboBox::from_id_source("format")
@@ -1058,9 +1221,12 @@ impl ConfigApp {
                         ui.selectable_value(&mut self.state.io.format, "parquet".to_string(), "Parquet");
                         ui.selectable_value(&mut self.state.io.format, "hdf5".to_string(), "HDF5");
                     });
-                self.state.push_history();
             });
-            
+            if self.state.io.format != old_format {
+                self.push_history();
+            }
+
+            let old_compression = self.state.io.compression.clone();
             ui.horizontal(|ui| {
                 ui.label("Compression:");
                 ComboBox::from_id_source("compression")
@@ -1070,87 +1236,89 @@ impl ConfigApp {
                         ui.selectable_value(&mut self.state.io.compression, "snappy".to_string(), "Snappy");
                         ui.selectable_value(&mut self.state.io.compression, "gzip".to_string(), "Gzip");
                     });
-                self.state.push_history();
             });
-            
+            if self.state.io.compression != old_compression {
+                self.push_history();
+            }
+
             ui.horizontal(|ui| {
                 ui.label("Buffer size:");
                 if ui.add(Slider::new(&mut self.state.io.buffer_size, 100..=10000)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
-            
+
             if ui.checkbox(&mut self.state.io.save_checkpoints, "Save checkpoints").changed() {
-                self.state.push_history();
+                self.push_history();
             }
-            
+
             if self.state.io.save_checkpoints {
                 ui.horizontal(|ui| {
                     ui.label("Checkpoint interval:");
                     if ui.add(Slider::new(&mut self.state.io.checkpoint_interval, 10..=1000)).changed() {
-                        self.state.push_history();
+                        self.push_history();
                     }
                 });
-                
+
                 ui.horizontal(|ui| {
                     ui.label("Maximum checkpoints:");
                     if ui.add(Slider::new(&mut self.state.io.max_checkpoints, 1..=100)).changed() {
-                        self.state.push_history();
+                        self.push_history();
                     }
                 });
             }
         }
     }
-    
+
     fn show_visualization_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("📊 Visualization Module");
         ui.separator();
-        
+
         if ui.checkbox(&mut self.state.viz.enabled, "Enable module").changed() {
-            self.state.push_history();
+            self.push_history();
         }
-        
+
         if self.state.viz.enabled {
             ui.horizontal(|ui| {
                 ui.label("Update interval:");
                 if ui.add(Slider::new(&mut self.state.viz.update_interval, 1..=100)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
-            
+
             ui.horizontal(|ui| {
                 ui.label("Output directory:");
                 if ui.text_edit_singleline(&mut self.state.viz.output_dir).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
-            
+
             if ui.checkbox(&mut self.state.viz.save_plots, "Save plots").changed() {
-                self.state.push_history();
+                self.push_history();
             }
-            
+
             ui.collapsing("📈 Plot types", |ui| {
                 if ui.checkbox(&mut self.state.viz.phase_distribution, "Phase distribution").changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
                 if ui.checkbox(&mut self.state.viz.maturity_histogram, "Maturity histogram").changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
                 if ui.checkbox(&mut self.state.viz.heatmap, "Heatmap").changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
                 if ui.checkbox(&mut self.state.viz.timeseries, "Time series").changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
                 if ui.checkbox(&mut self.state.viz.three_d_enabled, "3D visualization").changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
         }
     }
-    
+
     // ==================== DIALOGS ====================
-    
+
     fn show_save_dialog(&mut self, ctx: &Context) {
         let mut open = true;
         Window::new("💾 Save Configuration")
@@ -1160,31 +1328,31 @@ impl ConfigApp {
                     ui.label("Filename:");
                     ui.text_edit_singleline(&mut self.state.config_file);
                 });
-                
+
                 ui.horizontal(|ui| {
                     ui.label("Format:");
                     ui.radio_value(&mut self.state.config_format, "toml".to_string(), "TOML");
                     ui.radio_value(&mut self.state.config_format, "yaml".to_string(), "YAML");
                     ui.radio_value(&mut self.state.config_format, "json".to_string(), "JSON");
                 });
-                
+
                 ui.horizontal(|ui| {
                     if ui.button("Save").clicked() {
                         self.state.message = Some(format!("✅ Saved: {}", self.state.config_file));
                         self.state.show_save_dialog = false;
                     }
-                    
+
                     if ui.button("Cancel").clicked() {
                         self.state.show_save_dialog = false;
                     }
                 });
             });
-        
+
         if !open {
             self.state.show_save_dialog = false;
         }
     }
-    
+
     fn show_load_dialog(&mut self, ctx: &Context) {
         let mut open = true;
         Window::new("📂 Load Configuration")
@@ -1194,32 +1362,32 @@ impl ConfigApp {
                     ui.label("Filename:");
                     ui.text_edit_singleline(&mut self.state.config_file);
                 });
-                
+
                 ui.collapsing("📁 Available configurations", |ui| {
                     ui.label("configs/example.toml");
                     ui.label("configs/development.toml");
                     ui.label("configs/production.toml");
                     ui.label("configs/benchmark.toml");
                 });
-                
+
                 ui.horizontal(|ui| {
                     if ui.button("Load").clicked() {
                         self.state.message = Some(format!("✅ Loaded: {}", self.state.config_file));
                         self.state.show_load_dialog = false;
-                        self.state.push_history();
+                        self.push_history();
                     }
-                    
+
                     if ui.button("Cancel").clicked() {
                         self.state.show_load_dialog = false;
                     }
                 });
             });
-        
+
         if !open {
             self.state.show_load_dialog = false;
         }
     }
-    
+
     fn show_preset_dialog(&mut self, ctx: &Context) {
         let mut open = true;
         Window::new("📋 Configuration Presets")
@@ -1227,9 +1395,9 @@ impl ConfigApp {
             .show(ctx, |ui| {
                 ui.label("Select a preset configuration:");
                 ui.separator();
-                
+
                 let presets = ConfigPreset::get_all();
-                
+
                 for preset in presets {
                     ui.horizontal(|ui| {
                         ui.label(format!("{} {}", preset.icon, preset.name));
@@ -1237,65 +1405,67 @@ impl ConfigApp {
                             (preset.apply)(&mut self.state);
                             self.state.message = Some(format!("✅ Applied preset: {}", preset.name));
                             self.state.show_preset_dialog = false;
-                            self.state.push_history();
+                            self.push_history();
                         }
                     });
                     ui.label(format!("   {}", preset.description));
                     ui.separator();
                 }
-                
+
                 if ui.button("Close").clicked() {
                     self.state.show_preset_dialog = false;
                 }
             });
-        
+
         if !open {
             self.state.show_preset_dialog = false;
         }
     }
-    
+
     fn show_export_dialog(&mut self, ctx: &Context) {
         let mut open = true;
-        let script = PythonExporter::generate_script(&self.state);
-        
+        // Use cached script — generated once when the dialog was opened
+        let script = self.cached_export_script.clone().unwrap_or_default();
+
         Window::new("🐍 Export to Python")
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.label("Generated Python script:");
                 ui.separator();
-                
+
                 ScrollArea::vertical()
                     .max_height(400.0)
                     .show(ui, |ui| {
                         ui.label(script.as_str());
                     });
-                
+
                 ui.horizontal(|ui| {
                     if ui.button("📋 Copy to clipboard").clicked() {
-                        ui.ctx().copy_text(script);
+                        ui.ctx().copy_text(script.clone());
                         self.state.message = Some("✅ Script copied to clipboard".to_string());
                     }
-                    
+
                     if ui.button("💾 Save as script.py").clicked() {
-                        // Here you would save to file
                         self.state.message = Some("✅ Script saved".to_string());
                     }
-                    
+
                     if ui.button("Close").clicked() {
                         self.state.show_export_dialog = false;
+                        self.cached_export_script = None;
                     }
                 });
             });
-        
+
         if !open {
             self.state.show_export_dialog = false;
+            self.cached_export_script = None;
         }
     }
-    
+
     fn show_validation_dialog(&mut self, ctx: &Context) {
         let mut open = true;
-        let errors = &self.state.validation_errors.clone();
-        
+        let errors = self.state.validation_errors.clone();
+
         Window::new("✓ Parameter Validation")
             .open(&mut open)
             .show(ctx, |ui| {
@@ -1304,18 +1474,18 @@ impl ConfigApp {
                 } else {
                     ui.label("❌ Found issues:");
                     ui.separator();
-                    for error in errors {
+                    for error in &errors {
                         ui.label(error);
                     }
                 }
-                
+
                 ui.separator();
-                
+
                 if ui.button("Close").clicked() {
                     self.state.show_validation_dialog = false;
                 }
             });
-        
+
         if !open {
             self.state.show_validation_dialog = false;
         }
