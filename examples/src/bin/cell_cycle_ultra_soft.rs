@@ -46,6 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         nutrient_availability: 1.0,        // Максимум питательных веществ
         growth_factor_level: 1.0,           // Максимум факторов роста
         random_variation: 0.5,              // Больше случайности
+        ..Default::default()
     };
     
     println!("📊 Cell Cycle Parameters (Ultra Soft):");

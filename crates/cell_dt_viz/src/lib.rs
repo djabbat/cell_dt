@@ -15,9 +15,9 @@ use cell_dt_core::{
     components::{CentriolePair, CellCycleState, Phase},
     hecs::World,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 /// Типы визуализации
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,7 +88,7 @@ impl VisualizationData {
 
 /// Менеджер визуализации
 pub struct VisualizationManager {
-    pub data_history: Arc<Mutex<Vec<VisualizationData>>>,
+    pub data_history: Arc<Mutex<VecDeque<VisualizationData>>>,
     active_viz: Vec<Box<dyn Visualizer + Send>>,
     update_interval: u64,
     last_update: u64,
@@ -97,7 +97,7 @@ pub struct VisualizationManager {
 impl VisualizationManager {
     pub fn new(update_interval: u64) -> Self {
         Self {
-            data_history: Arc::new(Mutex::new(Vec::new())),
+            data_history: Arc::new(Mutex::new(VecDeque::new())),
             active_viz: Vec::new(),
             update_interval,
             last_update: 0,
@@ -117,11 +117,11 @@ impl VisualizationManager {
         data.step = step;
         data.time = time;
         
-        if let Ok(mut history) = self.data_history.lock() {
-            history.push(data.clone());
-            
+        {
+            let mut history = self.data_history.lock();
+            history.push_back(data.clone());
             if history.len() > 1000 {
-                history.remove(0);
+                history.pop_front();
             }
         }
         
@@ -131,6 +131,103 @@ impl VisualizationManager {
         
         self.last_update = step;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cell_dt_core::hecs::World;
+
+    // ==================== VisualizationData ====================
+
+    #[test]
+    fn test_visualization_data_from_empty_world() {
+        let world = World::new();
+        let data = VisualizationData::from_world(&world);
+        assert_eq!(data.cell_count, 0);
+        assert_eq!(data.cilia_count, 0);
+        assert!(data.phase_distribution.is_empty());
+        assert!(data.centriole_maturity.is_empty());
+        assert!(data.mtoc_activity.is_empty());
+    }
+
+    #[test]
+    fn test_visualization_data_fields_default() {
+        let world = World::new();
+        let data = VisualizationData::from_world(&world);
+        assert_eq!(data.step, 0);
+        assert_eq!(data.time, 0.0);
+    }
+
+    // ==================== VisualizationManager ====================
+
+    #[test]
+    fn test_manager_new_history_empty() {
+        let manager = VisualizationManager::new(10);
+        let history = manager.data_history.lock();
+        assert!(history.is_empty());
+    }
+
+    #[test]
+    fn test_manager_skips_update_before_interval() {
+        let mut manager = VisualizationManager::new(5);
+        let world = World::new();
+
+        // Steps 0..4 are all below the interval threshold
+        for i in 0..4u64 {
+            manager.update(&world, i, i as f64 * 0.1).unwrap();
+        }
+
+        let history = manager.data_history.lock();
+        assert!(history.is_empty(), "history should be empty before interval is reached");
+    }
+
+    #[test]
+    fn test_manager_records_data_at_interval() {
+        let mut manager = VisualizationManager::new(5);
+        let world = World::new();
+
+        // Step 5 crosses the interval (5 - 0 = 5, not < 5)
+        manager.update(&world, 5, 0.5).unwrap();
+
+        let history = manager.data_history.lock();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].step, 5);
+    }
+
+    #[test]
+    fn test_manager_history_bounded_at_1000() {
+        let mut manager = VisualizationManager::new(1);
+        let world = World::new();
+
+        for i in 0..1010u64 {
+            manager.update(&world, i, i as f64 * 0.1).unwrap();
+        }
+
+        let history = manager.data_history.lock();
+        assert!(history.len() <= 1000, "history exceeded 1000 entries: {}", history.len());
+    }
+
+    #[test]
+    fn test_manager_data_history_arc_is_shared() {
+        let manager = VisualizationManager::new(1);
+        let arc1 = manager.data_history.clone();
+        let arc2 = manager.data_history.clone();
+
+        arc1.lock().push_back(VisualizationData {
+            step: 42,
+            time: 1.0,
+            cell_count: 5,
+            phase_distribution: HashMap::new(),
+            centriole_maturity: vec![],
+            mtoc_activity: vec![],
+            cafd_counts: vec![],
+            cilia_count: 2,
+        });
+
+        assert_eq!(arc2.lock().len(), 1);
+        assert_eq!(arc2.lock()[0].step, 42);
     }
 }
 

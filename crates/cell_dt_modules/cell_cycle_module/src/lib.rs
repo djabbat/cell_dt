@@ -22,6 +22,14 @@ pub struct CellCycleParams {
     pub nutrient_availability: f32,
     pub growth_factor_level: f32,
     pub random_variation: f32,
+    /// Длительность фазы G1 (в единицах времени симуляции)
+    pub phase_duration_g1: f32,
+    /// Длительность фазы S
+    pub phase_duration_s: f32,
+    /// Длительность фазы G2
+    pub phase_duration_g2: f32,
+    /// Длительность фазы M
+    pub phase_duration_m: f32,
 }
 
 impl Default for CellCycleParams {
@@ -35,6 +43,10 @@ impl Default for CellCycleParams {
             nutrient_availability: 0.9,
             growth_factor_level: 0.8,
             random_variation: 0.2,
+            phase_duration_g1: 10.0,
+            phase_duration_s: 8.0,
+            phase_duration_g2: 4.0,
+            phase_duration_m: 1.0,
         }
     }
 }
@@ -70,10 +82,10 @@ impl CellCycleModule {
         cell_cycle.time_in_current_phase += dt;
         
         let phase_duration = match cell_cycle.phase {
-            Phase::G1 => 10.0,
-            Phase::S => 8.0,
-            Phase::G2 => 4.0,
-            Phase::M => 1.0,
+            Phase::G1 => self.params.phase_duration_g1,
+            Phase::S => self.params.phase_duration_s,
+            Phase::G2 => self.params.phase_duration_g2,
+            Phase::M => self.params.phase_duration_m,
         };
         
         cell_cycle.progress += dt / phase_duration;
@@ -134,6 +146,10 @@ impl SimulationModule for CellCycleModule {
             "nutrient_availability": self.params.nutrient_availability,
             "growth_factor_level": self.params.growth_factor_level,
             "random_variation": self.params.random_variation,
+            "phase_duration_g1": self.params.phase_duration_g1,
+            "phase_duration_s": self.params.phase_duration_s,
+            "phase_duration_g2": self.params.phase_duration_g2,
+            "phase_duration_m": self.params.phase_duration_m,
             "step_count": self.step_count,
             "cells_arrested": self.cells_arrested,
             "cells_divided": self.cells_divided,
@@ -165,7 +181,19 @@ impl SimulationModule for CellCycleModule {
         if let Some(random) = params.get("random_variation").and_then(|v| v.as_f64()) {
             self.params.random_variation = random as f32;
         }
-        
+        if let Some(d) = params.get("phase_duration_g1").and_then(|v| v.as_f64()) {
+            self.params.phase_duration_g1 = d as f32;
+        }
+        if let Some(d) = params.get("phase_duration_s").and_then(|v| v.as_f64()) {
+            self.params.phase_duration_s = d as f32;
+        }
+        if let Some(d) = params.get("phase_duration_g2").and_then(|v| v.as_f64()) {
+            self.params.phase_duration_g2 = d as f32;
+        }
+        if let Some(d) = params.get("phase_duration_m").and_then(|v| v.as_f64()) {
+            self.params.phase_duration_m = d as f32;
+        }
+
         Ok(())
     }
     
@@ -198,5 +226,135 @@ impl SimulationModule for CellCycleModule {
 impl Default for CellCycleModule {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cell_dt_core::components::CellCycleStateExtended;
+
+    // ==================== Params ====================
+
+    #[test]
+    fn test_default_phase_durations() {
+        let p = CellCycleParams::default();
+        assert_eq!(p.phase_duration_g1, 10.0);
+        assert_eq!(p.phase_duration_s, 8.0);
+        assert_eq!(p.phase_duration_g2, 4.0);
+        assert_eq!(p.phase_duration_m, 1.0);
+    }
+
+    #[test]
+    fn test_get_params_includes_phase_durations() {
+        let module = CellCycleModule::new();
+        let params = module.get_params();
+        assert!(params.get("phase_duration_g1").is_some());
+        assert!(params.get("phase_duration_s").is_some());
+        assert!(params.get("phase_duration_g2").is_some());
+        assert!(params.get("phase_duration_m").is_some());
+    }
+
+    #[test]
+    fn test_set_params_updates_phase_durations() {
+        let mut module = CellCycleModule::new();
+        module.set_params(&serde_json::json!({
+            "phase_duration_g1": 20.0,
+            "phase_duration_s":  15.0,
+            "phase_duration_g2": 6.0,
+            "phase_duration_m":  2.0,
+        })).unwrap();
+        assert_eq!(module.params.phase_duration_g1, 20.0);
+        assert_eq!(module.params.phase_duration_s, 15.0);
+        assert_eq!(module.params.phase_duration_g2, 6.0);
+        assert_eq!(module.params.phase_duration_m, 2.0);
+    }
+
+    #[test]
+    fn test_set_params_partial_update() {
+        let mut module = CellCycleModule::new();
+        module.set_params(&serde_json::json!({ "phase_duration_g1": 30.0 })).unwrap();
+        assert_eq!(module.params.phase_duration_g1, 30.0);
+        // Others unchanged
+        assert_eq!(module.params.phase_duration_s, 8.0);
+    }
+
+    // ==================== Phase transitions ====================
+
+    #[test]
+    fn test_phase_g1_transitions_to_s() {
+        let module = CellCycleModule::new();
+        let mut state = CellCycleStateExtended::new();
+        state.phase = Phase::G1;
+        state.progress = 0.0;
+
+        // dt > g1 duration (10.0) triggers transition
+        module.update_cell_cycle(&mut state, None, 11.0);
+
+        assert_eq!(state.phase, Phase::S);
+        assert_eq!(state.progress, 0.0);
+        assert_eq!(state.time_in_current_phase, 0.0);
+    }
+
+    #[test]
+    fn test_phase_s_transitions_to_g2() {
+        let module = CellCycleModule::new();
+        let mut state = CellCycleStateExtended::new();
+        state.phase = Phase::S;
+        module.update_cell_cycle(&mut state, None, 9.0);
+        assert_eq!(state.phase, Phase::G2);
+    }
+
+    #[test]
+    fn test_phase_g2_transitions_to_m() {
+        let module = CellCycleModule::new();
+        let mut state = CellCycleStateExtended::new();
+        state.phase = Phase::G2;
+        module.update_cell_cycle(&mut state, None, 5.0);
+        assert_eq!(state.phase, Phase::M);
+    }
+
+    #[test]
+    fn test_phase_m_transitions_to_g1_and_increments_cycle() {
+        let module = CellCycleModule::new();
+        let mut state = CellCycleStateExtended::new();
+        state.phase = Phase::M;
+        state.cycle_count = 0;
+        module.update_cell_cycle(&mut state, None, 2.0);
+        assert_eq!(state.phase, Phase::G1);
+        assert_eq!(state.cycle_count, 1);
+    }
+
+    #[test]
+    fn test_full_cycle_increments_count() {
+        let module = CellCycleModule::new();
+        let mut state = CellCycleStateExtended::new();
+        state.phase = Phase::G1;
+        state.cycle_count = 0;
+
+        module.update_cell_cycle(&mut state, None, 11.0); // G1 → S
+        module.update_cell_cycle(&mut state, None, 9.0);  // S  → G2
+        module.update_cell_cycle(&mut state, None, 5.0);  // G2 → M
+        module.update_cell_cycle(&mut state, None, 2.0);  // M  → G1
+
+        assert_eq!(state.phase, Phase::G1);
+        assert_eq!(state.cycle_count, 1);
+    }
+
+    #[test]
+    fn test_short_dt_does_not_transition() {
+        let module = CellCycleModule::new();
+        let mut state = CellCycleStateExtended::new();
+        state.phase = Phase::G1;
+
+        // dt = 1.0, much less than G1 duration 10.0
+        module.update_cell_cycle(&mut state, None, 1.0);
+        assert_eq!(state.phase, Phase::G1);
+        assert!(state.progress > 0.0 && state.progress < 1.0);
+    }
+
+    #[test]
+    fn test_module_name() {
+        assert_eq!(CellCycleModule::new().name(), "cell_cycle_module");
     }
 }

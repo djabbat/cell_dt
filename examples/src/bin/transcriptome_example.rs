@@ -48,6 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         nutrient_availability: 0.9,
         growth_factor_level: 0.8,
         random_variation: 0.2,
+        ..Default::default()
     };
     let cell_cycle_module = CellCycleModule::with_params(cell_cycle_params);
     sim.register_module(Box::new(cell_cycle_module))?;

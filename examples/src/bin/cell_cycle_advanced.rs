@@ -46,6 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         nutrient_availability: 0.95,
         growth_factor_level: 0.9,
         random_variation: 0.3,
+        ..Default::default()
     };
     
     println!("📊 Cell Cycle Parameters:");

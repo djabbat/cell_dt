@@ -18,12 +18,15 @@ use thiserror::Error;
 pub enum IoError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    
+
     #[error("CSV error: {0}")]
     Csv(#[from] csv::Error),
-    
+
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+
+    #[error("Empty buffer: {0}")]
+    EmptyBuffer(&'static str),
 }
 
 /// Результат операций ввода/вывода
@@ -146,10 +149,7 @@ impl DataExporter {
     
     pub fn save_snapshot(&mut self, step: u64) -> IoResult<PathBuf> {
         if self.buffer.is_empty() {
-            return Err(IoError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "No data to save"
-            )));
+            return Err(IoError::EmptyBuffer("no data collected for this snapshot"));
         }
         
         let csv_path = self.output_dir.join(format!(
@@ -165,5 +165,150 @@ impl DataExporter {
     
     pub fn clear(&mut self) {
         self.buffer.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_cell_data(id: u64) -> CellData {
+        CellData {
+            cell_id: id,
+            step: 1,
+            time: 0.1,
+            mother_maturity: 0.9,
+            daughter_maturity: 0.4,
+            mtoc_activity: 0.7,
+            cilium_present: true,
+            phase: "G1".to_string(),
+            cycle_progress: 0.5,
+            cycle_count: 1,
+            growth_signal: 0.6,
+            stress_level: 0.1,
+        }
+    }
+
+    // ==================== CellData ====================
+
+    #[test]
+    fn test_csv_headers_count() {
+        assert_eq!(CellData::csv_headers().len(), 12);
+    }
+
+    #[test]
+    fn test_csv_record_count_matches_headers() {
+        let data = make_cell_data(1);
+        assert_eq!(data.to_csv_record().len(), CellData::csv_headers().len());
+    }
+
+    #[test]
+    fn test_csv_record_values() {
+        let data = make_cell_data(42);
+        let record = data.to_csv_record();
+        assert_eq!(record[0], "42");       // cell_id
+        assert_eq!(record[1], "1");        // step
+        assert_eq!(record[7], "G1");       // phase
+        assert_eq!(record[9], "1");        // cycle_count
+        assert_eq!(record[6], "1");        // cilium_present → 1
+    }
+
+    #[test]
+    fn test_csv_record_cilium_false() {
+        let mut data = make_cell_data(1);
+        data.cilium_present = false;
+        let record = data.to_csv_record();
+        assert_eq!(record[6], "0");
+    }
+
+    // ==================== IoError ====================
+
+    #[test]
+    fn test_io_error_empty_buffer_display() {
+        let err = IoError::EmptyBuffer("nothing to save");
+        let msg = format!("{}", err);
+        assert!(msg.contains("nothing to save"));
+    }
+
+    // ==================== DataExporter ====================
+
+    #[test]
+    fn test_save_snapshot_empty_buffer_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut exporter = DataExporter::new(dir.path(), "test");
+        let result = exporter.save_snapshot(0);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), IoError::EmptyBuffer(_)));
+    }
+
+    #[test]
+    fn test_data_exporter_creates_nested_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a").join("b").join("c");
+        let _ = DataExporter::new(&nested, "test");
+        assert!(nested.exists());
+    }
+
+    #[test]
+    fn test_save_snapshot_writes_csv() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut exporter = DataExporter::new(dir.path(), "cells");
+        exporter.buffer.push(make_cell_data(7));
+        exporter.buffer.push(make_cell_data(8));
+
+        let path = exporter.save_snapshot(5).unwrap();
+        assert!(path.exists());
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("cell_id"));  // header row
+        assert!(content.contains("7"));
+        assert!(content.contains("8"));
+    }
+
+    #[test]
+    fn test_save_snapshot_clears_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut exporter = DataExporter::new(dir.path(), "cells");
+        exporter.buffer.push(make_cell_data(1));
+        exporter.save_snapshot(0).unwrap();
+        assert!(exporter.buffer.is_empty());
+    }
+
+    #[test]
+    fn test_clear_empties_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut exporter = DataExporter::new(dir.path(), "cells");
+        exporter.buffer.push(make_cell_data(1));
+        exporter.buffer.push(make_cell_data(2));
+        exporter.clear();
+        assert!(exporter.buffer.is_empty());
+    }
+
+    // ==================== csv_exporter ====================
+
+    #[test]
+    fn test_write_csv_creates_file_with_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.csv");
+        let cells = vec![make_cell_data(99)];
+
+        csv_exporter::write_csv(&path, &cells).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("cell_id"));
+        assert!(content.contains("99"));
+    }
+
+    #[test]
+    fn test_write_csv_empty_cells_writes_only_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.csv");
+
+        csv_exporter::write_csv(&path, &[]).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("cell_id"));
+        // Only one line (header)
+        assert_eq!(content.lines().count(), 1);
     }
 }

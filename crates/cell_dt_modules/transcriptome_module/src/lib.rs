@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use log::{info, debug, warn};
 use rand::Rng;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Типы сигнальных путей
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -545,7 +545,7 @@ impl Default for TranscriptomeParams {
 pub struct TranscriptomeModule {
     params: TranscriptomeParams,
     step_count: u64,
-    expression_history: Vec<HashMap<String, f32>>,
+    expression_history: VecDeque<HashMap<String, f32>>,
 }
 
 impl TranscriptomeModule {
@@ -553,7 +553,7 @@ impl TranscriptomeModule {
         Self {
             params: TranscriptomeParams::default(),
             step_count: 0,
-            expression_history: Vec::new(),
+            expression_history: VecDeque::new(),
         }
     }
     
@@ -561,7 +561,7 @@ impl TranscriptomeModule {
         Self {
             params,
             step_count: 0,
-            expression_history: Vec::new(),
+            expression_history: VecDeque::new(),
         }
     }
     
@@ -614,11 +614,11 @@ impl SimulationModule for TranscriptomeModule {
         // Сохраняем историю экспрессии для анализа
         if self.step_count % 100 == 0 {
             if let Some((_, (transcriptome, _, _))) = query.iter().next() {
-                self.expression_history.push(transcriptome.get_expression_profile());
-                
+                self.expression_history.push_back(transcriptome.get_expression_profile());
+
                 // Ограничиваем историю
                 if self.expression_history.len() > 100 {
-                    self.expression_history.remove(0);
+                    self.expression_history.pop_front();
                 }
                 
                 // Логируем статистику
@@ -692,5 +692,132 @@ impl SimulationModule for TranscriptomeModule {
 impl Default for TranscriptomeModule {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== TranscriptomeState ====================
+
+    #[test]
+    fn test_state_initializes_12_genes() {
+        let state = TranscriptomeState::new();
+        assert_eq!(state.genes.len(), 12);
+    }
+
+    #[test]
+    fn test_state_initializes_8_pathways() {
+        let state = TranscriptomeState::new();
+        assert_eq!(state.pathways.len(), 8);
+    }
+
+    #[test]
+    fn test_state_initializes_11_transcription_factors() {
+        let state = TranscriptomeState::new();
+        assert_eq!(state.transcription_factors.len(), 11);
+    }
+
+    #[test]
+    fn test_centriole_related_genes_present() {
+        let state = TranscriptomeState::new();
+        assert!(state.centriole_related_genes.contains(&"CETN1".to_string()));
+        assert!(state.centriole_related_genes.contains(&"CETN2".to_string()));
+        assert!(state.centriole_related_genes.contains(&"PCNT".to_string()));
+    }
+
+    #[test]
+    fn test_get_expression_profile_length_matches_genes() {
+        let state = TranscriptomeState::new();
+        let profile = state.get_expression_profile();
+        assert_eq!(profile.len(), state.genes.len());
+    }
+
+    #[test]
+    fn test_get_pathway_activity_length() {
+        let state = TranscriptomeState::new();
+        let activity = state.get_pathway_activity();
+        assert_eq!(activity.len(), 8);
+    }
+
+    #[test]
+    fn test_is_stem_cell_false_by_default() {
+        let state = TranscriptomeState::new();
+        // Stemness genes (NANOG, POU5F1, SOX2) start at 0.0 expression
+        assert!(!state.is_stem_cell());
+    }
+
+    #[test]
+    fn test_is_stem_cell_true_when_genes_expressed() {
+        let mut state = TranscriptomeState::new();
+        for name in &["NANOG", "POU5F1", "SOX2"] {
+            if let Some(gene) = state.genes.get_mut(*name) {
+                gene.expression_level = 0.6;
+            }
+        }
+        assert!(state.is_stem_cell());
+    }
+
+    #[test]
+    fn test_get_cell_type_returns_nonempty_string() {
+        let state = TranscriptomeState::new();
+        assert!(!state.get_cell_type().is_empty());
+    }
+
+    #[test]
+    fn test_default_equals_new() {
+        let a = TranscriptomeState::new();
+        let b = TranscriptomeState::default();
+        assert_eq!(a.genes.len(), b.genes.len());
+        assert_eq!(a.pathways.len(), b.pathways.len());
+    }
+
+    // ==================== TranscriptomeModule ====================
+
+    #[test]
+    fn test_module_name() {
+        assert_eq!(TranscriptomeModule::new().name(), "transcriptome_module");
+    }
+
+    #[test]
+    fn test_expression_history_is_vecdeque() {
+        let mut module = TranscriptomeModule::new();
+        assert_eq!(module.expression_history.len(), 0);
+
+        // push_back and pop_front are VecDeque-specific
+        module.expression_history.push_back(HashMap::new());
+        module.expression_history.push_back(HashMap::new());
+        assert_eq!(module.expression_history.len(), 2);
+
+        module.expression_history.pop_front();
+        assert_eq!(module.expression_history.len(), 1);
+    }
+
+    #[test]
+    fn test_expression_history_capped_at_100() {
+        let mut module = TranscriptomeModule::new();
+        for _ in 0..105 {
+            module.expression_history.push_back(HashMap::new());
+            if module.expression_history.len() > 100 {
+                module.expression_history.pop_front();
+            }
+        }
+        assert_eq!(module.expression_history.len(), 100);
+    }
+
+    #[test]
+    fn test_get_params_has_history_length() {
+        let module = TranscriptomeModule::new();
+        let params = module.get_params();
+        assert!(params.get("history_length").is_some());
+        assert_eq!(params["history_length"].as_u64().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_set_params_updates_mutation_rate() {
+        let mut module = TranscriptomeModule::new();
+        module.set_params(&serde_json::json!({ "mutation_rate": 0.005 })).unwrap();
+        assert_eq!(module.params.mutation_rate, 0.005);
     }
 }

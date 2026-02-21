@@ -11,3 +11,4 @@ nalgebra = "0.32"
 rand.workspace = true
 log.workspace = true
 rayon.workspace = true
+parking_lot.workspace = true

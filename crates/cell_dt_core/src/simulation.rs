@@ -91,7 +91,7 @@ impl SimulationManager {
         
         let dt = self.config.dt;
         
-        for (name, module) in self.modules.iter_mut() {
+        for (_, module) in self.modules.iter_mut() {
             module.step(&mut self.world, dt)?;
         }
         
@@ -146,7 +146,6 @@ impl SimulationManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::*;
     
     struct TestModule;
     

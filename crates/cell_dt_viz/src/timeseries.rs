@@ -1,15 +1,19 @@
 use crate::{VisualizationData, Visualizer};
 use plotters::prelude::*;
-use std::sync::{Arc, Mutex};
+use std::collections::VecDeque;
+use std::sync::Arc;
+use parking_lot::Mutex;
 
 pub struct TimeSeriesVisualizer {
-    data_history: Arc<Mutex<Vec<VisualizationData>>>,
+    data_history: Arc<Mutex<VecDeque<VisualizationData>>>,
     output_dir: String,
 }
 
 impl TimeSeriesVisualizer {
-    pub fn new(output_dir: &str, data_history: Arc<Mutex<Vec<VisualizationData>>>) -> Self {
-        std::fs::create_dir_all(output_dir).unwrap();
+    pub fn new(output_dir: &str, data_history: Arc<Mutex<VecDeque<VisualizationData>>>) -> Self {
+        if let Err(e) = std::fs::create_dir_all(output_dir) {
+            eprintln!("Warning: could not create output directory '{}': {}", output_dir, e);
+        }
         Self {
             data_history,
             output_dir: output_dir.to_string(),
@@ -21,7 +25,7 @@ impl TimeSeriesVisualizer {
         let root = BitMapBackend::new(&filename, (1200, 800)).into_drawing_area();
         root.fill(&WHITE)?;
         
-        let history = self.data_history.lock().unwrap();
+        let history = self.data_history.lock();
         
         if history.is_empty() {
             return Ok(());
@@ -40,7 +44,7 @@ impl TimeSeriesVisualizer {
             .x_label_area_size(40)
             .y_label_area_size(40)
             .build_cartesian_2d(
-                *steps.first().unwrap()..*steps.last().unwrap(),
+                steps.first().copied().unwrap_or(0)..steps.last().copied().unwrap_or(1),
                 0..max_cells.max(max_cilia) + 1
             )?;
         

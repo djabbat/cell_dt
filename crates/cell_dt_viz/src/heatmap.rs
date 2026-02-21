@@ -8,7 +8,9 @@ pub struct HeatmapVisualizer {
 
 impl HeatmapVisualizer {
     pub fn new(output_dir: &str) -> Self {
-        std::fs::create_dir_all(output_dir).unwrap();
+        if let Err(e) = std::fs::create_dir_all(output_dir) {
+            eprintln!("Warning: could not create output directory '{}': {}", output_dir, e);
+        }
         Self {
             output_dir: output_dir.to_string(),
             current_step: 0,

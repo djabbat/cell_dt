@@ -138,6 +138,68 @@ impl Default for FullConfig {
     }
 }
 
+impl FullConfig {
+    /// Проверяет корректность всех параметров конфигурации.
+    /// Возвращает список найденных ошибок (пустой — если конфиг валиден).
+    pub fn validate(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+
+        // Simulation
+        if self.simulation.max_steps == 0 {
+            errors.push("simulation.max_steps must be > 0".to_string());
+        }
+        if self.simulation.dt <= 0.0 {
+            errors.push("simulation.dt must be > 0".to_string());
+        }
+        if self.simulation.checkpoint_interval == 0 {
+            errors.push("simulation.checkpoint_interval must be > 0".to_string());
+        }
+
+        // Centriole
+        if self.centriole_module.enabled {
+            if !(0.0..=1.0).contains(&self.centriole_module.acetylation_rate) {
+                errors.push("centriole_module.acetylation_rate must be in [0, 1]".to_string());
+            }
+            if !(0.0..=1.0).contains(&self.centriole_module.oxidation_rate) {
+                errors.push("centriole_module.oxidation_rate must be in [0, 1]".to_string());
+            }
+        }
+
+        // Cell cycle
+        if self.cell_cycle_module.enabled {
+            if self.cell_cycle_module.base_cycle_time <= 0.0 {
+                errors.push("cell_cycle_module.base_cycle_time must be > 0".to_string());
+            }
+            if !(0.0..=1.0).contains(&self.cell_cycle_module.checkpoint_strictness) {
+                errors.push("cell_cycle_module.checkpoint_strictness must be in [0, 1]".to_string());
+            }
+            if !(0.0..=1.0).contains(&self.cell_cycle_module.nutrient_availability) {
+                errors.push("cell_cycle_module.nutrient_availability must be in [0, 1]".to_string());
+            }
+            if !(0.0..=1.0).contains(&self.cell_cycle_module.growth_factor_level) {
+                errors.push("cell_cycle_module.growth_factor_level must be in [0, 1]".to_string());
+            }
+        }
+
+        // Transcriptome
+        if self.transcriptome_module.enabled {
+            if !(0.0..=1.0).contains(&self.transcriptome_module.mutation_rate) {
+                errors.push("transcriptome_module.mutation_rate must be in [0, 1]".to_string());
+            }
+            if self.transcriptome_module.noise_level < 0.0 {
+                errors.push("transcriptome_module.noise_level must be >= 0".to_string());
+            }
+        }
+
+        // I/O
+        if self.io_module.buffer_size == 0 {
+            errors.push("io_module.buffer_size must be > 0".to_string());
+        }
+
+        errors
+    }
+}
+
 /// Загрузчик конфигурации
 pub struct ConfigLoader;
 
@@ -146,13 +208,21 @@ impl ConfigLoader {
     pub fn from_toml(path: &str) -> Result<FullConfig, anyhow::Error> {
         let contents = std::fs::read_to_string(path)?;
         let config: FullConfig = toml::from_str(&contents)?;
+        let errors = config.validate();
+        if !errors.is_empty() {
+            anyhow::bail!("Invalid configuration:\n  - {}", errors.join("\n  - "));
+        }
         Ok(config)
     }
-    
+
     /// Загрузка из YAML файла
     pub fn from_yaml(path: &str) -> Result<FullConfig, anyhow::Error> {
         let contents = std::fs::read_to_string(path)?;
         let config: FullConfig = serde_yaml::from_str(&contents)?;
+        let errors = config.validate();
+        if !errors.is_empty() {
+            anyhow::bail!("Invalid configuration:\n  - {}", errors.join("\n  - "));
+        }
         Ok(config)
     }
     

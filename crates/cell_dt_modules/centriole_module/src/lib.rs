@@ -1,7 +1,6 @@
 use cell_dt_core::{
     SimulationModule, SimulationResult,
-    components::*,
-    hecs::{World},
+    hecs::World,
 };
 use serde_json::{json, Value};
 use log::info;
@@ -51,7 +50,7 @@ impl SimulationModule for CentrioleModule {
         "centriole_module"
     }
     
-    fn step(&mut self, world: &mut World, _dt: f64) -> SimulationResult<()> {
+    fn step(&mut self, _world: &mut World, _dt: f64) -> SimulationResult<()> {
         self.step_count += 1;
         Ok(())
     }
@@ -86,5 +85,89 @@ impl SimulationModule for CentrioleModule {
 impl Default for CentrioleModule {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cell_dt_core::hecs::World;
+
+    #[test]
+    fn test_default_params() {
+        let module = CentrioleModule::new();
+        assert_eq!(module.params.acetylation_rate, 0.02);
+        assert_eq!(module.params.oxidation_rate, 0.01);
+        assert!(module.params.parallel_cells);
+    }
+
+    #[test]
+    fn test_with_parallel_false() {
+        let module = CentrioleModule::with_parallel(false);
+        assert!(!module.params.parallel_cells);
+    }
+
+    #[test]
+    fn test_with_parallel_true() {
+        let module = CentrioleModule::with_parallel(true);
+        assert!(module.params.parallel_cells);
+    }
+
+    #[test]
+    fn test_step_increments_counter() {
+        let mut module = CentrioleModule::new();
+        let mut world = World::new();
+        assert_eq!(module.step_count, 0);
+        module.step(&mut world, 0.1).unwrap();
+        assert_eq!(module.step_count, 1);
+        module.step(&mut world, 0.1).unwrap();
+        assert_eq!(module.step_count, 2);
+    }
+
+    #[test]
+    fn test_name() {
+        let module = CentrioleModule::new();
+        assert_eq!(module.name(), "centriole_module");
+    }
+
+    #[test]
+    fn test_set_params_updates_rates() {
+        let mut module = CentrioleModule::new();
+        let params = serde_json::json!({
+            "acetylation_rate": 0.05,
+            "oxidation_rate": 0.03,
+            "parallel_cells": false,
+        });
+        module.set_params(&params).unwrap();
+        assert_eq!(module.params.acetylation_rate, 0.05);
+        assert_eq!(module.params.oxidation_rate, 0.03);
+        assert!(!module.params.parallel_cells);
+    }
+
+    #[test]
+    fn test_set_params_ignores_unknown_keys() {
+        let mut module = CentrioleModule::new();
+        let params = serde_json::json!({ "unknown_key": 99 });
+        assert!(module.set_params(&params).is_ok());
+        // Original values unchanged
+        assert_eq!(module.params.acetylation_rate, 0.02);
+    }
+
+    #[test]
+    fn test_get_params_has_all_keys() {
+        let module = CentrioleModule::new();
+        let params = module.get_params();
+        assert!(params.get("acetylation_rate").is_some());
+        assert!(params.get("oxidation_rate").is_some());
+        assert!(params.get("parallel_cells").is_some());
+    }
+
+    #[test]
+    fn test_get_params_roundtrip() {
+        let mut module = CentrioleModule::new();
+        let original = module.get_params();
+        module.set_params(&original).unwrap();
+        let after = module.get_params();
+        assert_eq!(original["acetylation_rate"], after["acetylation_rate"]);
     }
 }
