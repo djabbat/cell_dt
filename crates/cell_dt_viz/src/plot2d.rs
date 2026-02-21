@@ -20,8 +20,8 @@ impl ScatterPlotVisualizer {
         let root = BitMapBackend::new(&filename, (800, 600)).into_drawing_area();
         root.fill(&WHITE)?;
         
-        let phases = vec!["G1", "S", "G2", "M"];
-        let phase_enum = vec![
+        let phases = ["G1", "S", "G2", "M"];
+        let phase_enum = [
             cell_dt_core::components::Phase::G1,
             cell_dt_core::components::Phase::S,
             cell_dt_core::components::Phase::G2,
@@ -75,7 +75,7 @@ impl ScatterPlotVisualizer {
             histogram[bin] += 1;
         }
         
-        let histogram_i32: Vec<i32> = histogram.iter().map(|&x| x as i32).collect();
+        let histogram_i32 = histogram.to_vec();
         let max_count = *histogram_i32.iter().max().unwrap_or(&1);
         
         let mut chart = ChartBuilder::on(&root)

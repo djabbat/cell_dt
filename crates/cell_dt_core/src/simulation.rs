@@ -76,8 +76,8 @@ impl SimulationManager {
     pub fn initialize(&mut self) -> SimulationResult<()> {
         info!("Initializing simulation with {} modules", self.modules.len());
         
-        for (name, module) in self.modules.iter_mut() {
-            debug!("Initializing module: {}", name);
+        for (_name, module) in self.modules.iter_mut() {
+            debug!("Initializing module: {}", _name);
             module.initialize(&mut self.world)?;
         }
         
@@ -91,7 +91,7 @@ impl SimulationManager {
         
         let dt = self.config.dt;
         
-        for (name, module) in self.modules.iter_mut() {
+        for (_name, module) in self.modules.iter_mut() {
             module.step(&mut self.world, dt)?;
         }
         
@@ -146,7 +146,6 @@ impl SimulationManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::*;
     
     struct TestModule;
     

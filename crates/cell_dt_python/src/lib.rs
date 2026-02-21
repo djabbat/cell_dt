@@ -1,5 +1,9 @@
 //! Python биндинги для Cell DT платформы
 
+// pyo3 attr-макросы генерируют impl-блоки вне модуля — известная особенность pyo3 0.20.
+// Исправляется обновлением до pyo3 ≥ 0.21. Подавляем до миграции.
+#![allow(non_local_definitions)]
+
 use cell_dt_core::{
     SimulationManager, SimulationConfig,
     components::*,

@@ -43,9 +43,8 @@ impl HeatmapVisualizer {
             .y_desc("Cell Y Position")
             .draw()?;
         
-        for i in 0..size {
-            for j in 0..size {
-                let value = matrix[i][j];
+        for (i, row) in matrix.iter().enumerate() {
+            for (j, &value) in row.iter().enumerate() {
                 let color = if value > 0.8 {
                     RED
                 } else if value > 0.6 {
@@ -57,7 +56,7 @@ impl HeatmapVisualizer {
                 } else {
                     BLUE
                 };
-                
+
                 let rect = Rectangle::new(
                     [(i as i32, j as i32), (i as i32 + 1, j as i32 + 1)],
                     color.filled(),

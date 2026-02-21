@@ -12,6 +12,7 @@ members = [
     "crates/cell_dt_modules/transcriptome_module",
     "crates/cell_dt_modules/asymmetric_division_module",
     "crates/cell_dt_modules/stem_cell_hierarchy_module",
+    "crates/cell_dt_modules/human_development_module",
     "examples",
 ]
 

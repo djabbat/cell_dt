@@ -146,10 +146,7 @@ impl DataExporter {
     
     pub fn save_snapshot(&mut self, step: u64) -> IoResult<PathBuf> {
         if self.buffer.is_empty() {
-            return Err(IoError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "No data to save"
-            )));
+            return Err(IoError::Io(std::io::Error::other("No data to save")));
         }
         
         let csv_path = self.output_dir.join(format!(

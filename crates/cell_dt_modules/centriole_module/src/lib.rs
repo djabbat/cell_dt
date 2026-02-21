@@ -1,7 +1,6 @@
 use cell_dt_core::{
     SimulationModule, SimulationResult,
-    components::*,
-    hecs::{World},
+    hecs::World,
 };
 use serde_json::{json, Value};
 use log::info;
@@ -37,10 +36,8 @@ impl CentrioleModule {
     }
     
     pub fn with_parallel(parallel_cells: bool) -> Self {
-        let mut params = CentrioleParams::default();
-        params.parallel_cells = parallel_cells;
         Self {
-            params,
+            params: CentrioleParams { parallel_cells, ..Default::default() },
             step_count: 0,
         }
     }
@@ -51,7 +48,7 @@ impl SimulationModule for CentrioleModule {
         "centriole_module"
     }
     
-    fn step(&mut self, world: &mut World, _dt: f64) -> SimulationResult<()> {
+    fn step(&mut self, _world: &mut World, _dt: f64) -> SimulationResult<()> {
         self.step_count += 1;
         Ok(())
     }

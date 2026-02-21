@@ -57,7 +57,7 @@ impl TimeSeriesVisualizer {
             )
         )?
         .label("Total Cells")
-        .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 10, y)], &BLUE));
+        .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 10, y)], BLUE));
         
         chart.draw_series(
             LineSeries::new(
@@ -67,11 +67,11 @@ impl TimeSeriesVisualizer {
             )
         )?
         .label("Cells with Cilia")
-        .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 10, y)], &RED));
+        .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 10, y)], RED));
         
         chart.configure_series_labels()
-            .background_style(&WHITE.mix(0.8))
-            .border_style(&BLACK)
+            .background_style(WHITE.mix(0.8))
+            .border_style(BLACK)
             .draw()?;
         
         Ok(())
@@ -84,7 +84,7 @@ impl Visualizer for TimeSeriesVisualizer {
     }
     
     fn update(&mut self, _data: &VisualizationData) -> Result<(), Box<dyn std::error::Error>> {
-        if _data.step % 10 == 0 {
+        if _data.step.is_multiple_of(10) {
             self.plot_time_series()?;
         }
         Ok(())

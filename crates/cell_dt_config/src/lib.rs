@@ -117,25 +117,13 @@ impl Default for IOConfig {
 }
 
 /// Полная конфигурация
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FullConfig {
     pub simulation: SimulationConfig,
     pub centriole_module: CentrioleConfig,
     pub cell_cycle_module: CellCycleConfig,
     pub transcriptome_module: TranscriptomeConfig,
     pub io_module: IOConfig,
-}
-
-impl Default for FullConfig {
-    fn default() -> Self {
-        Self {
-            simulation: SimulationConfig::default(),
-            centriole_module: CentrioleConfig::default(),
-            cell_cycle_module: CellCycleConfig::default(),
-            transcriptome_module: TranscriptomeConfig::default(),
-            io_module: IOConfig::default(),
-        }
-    }
 }
 
 /// Загрузчик конфигурации

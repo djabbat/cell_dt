@@ -420,7 +420,7 @@ impl TranscriptomeState {
         self.active_pathways = self.pathways.values().filter(|p| p.activity > 0.3).count();
         
         // Считаем степень дифференцировки
-        let stemness_genes = vec!["NANOG", "POU5F1", "SOX2"];
+        let stemness_genes = ["NANOG", "POU5F1", "SOX2"];
         let stemness_expression: f32 = stemness_genes.iter()
             .filter_map(|&name| self.genes.get(name))
             .map(|g| g.expression_level)
@@ -483,7 +483,7 @@ impl TranscriptomeState {
     
     /// Проверить, является ли клетка стволовой
     pub fn is_stem_cell(&self) -> bool {
-        let stemness_genes = vec!["NANOG", "POU5F1", "SOX2"];
+        let stemness_genes = ["NANOG", "POU5F1", "SOX2"];
         let stemness_score: f32 = stemness_genes.iter()
             .filter_map(|&name| self.genes.get(name))
             .map(|g| g.expression_level)
@@ -612,7 +612,7 @@ impl SimulationModule for TranscriptomeModule {
         }
         
         // Сохраняем историю экспрессии для анализа
-        if self.step_count % 100 == 0 {
+        if self.step_count.is_multiple_of(100) {
             if let Some((_, (transcriptome, _, _))) = query.iter().next() {
                 self.expression_history.push(transcriptome.get_expression_profile());
                 

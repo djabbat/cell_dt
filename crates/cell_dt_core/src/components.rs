@@ -23,15 +23,9 @@ impl Default for Position {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GeneExpression {
     pub profile: HashMap<String, f32>,
-}
-
-impl Default for GeneExpression {
-    fn default() -> Self {
-        Self { profile: HashMap::new() }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,6 +215,364 @@ impl CellCycleStateExtended {
 }
 
 impl Default for CellCycleStateExtended {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================
+// CDATA — Centriolar Damage Accumulation Theory of Aging
+// Компоненты для моделирования полного жизненного цикла
+// ============================================================
+
+/// Стадии развития организма (от зиготы до смерти)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DevelopmentalStage {
+    /// Оплодотворённая яйцеклетка — нет центриолей, тотипотентность
+    Zygote,
+    /// 2–16 клеток, де-ново формирование центриолей
+    Cleavage,
+    /// Бластоциста — ВКМ (плюрипотентные) vs трофобласт
+    Blastocyst,
+    /// Гаструляция — три зародышевых листка
+    Gastrulation,
+    /// Нейруляция и органогенез
+    Organogenesis,
+    /// Плодный период
+    Fetal,
+    /// Постнатальный рост и развитие (0–18 лет)
+    Postnatal,
+    /// Взрослый организм (18–40 лет) — гомеостаз тканей
+    Adult,
+    /// Средний возраст (40–65 лет) — начало накопления повреждений
+    MiddleAge,
+    /// Пожилой (65+ лет) — выраженное старение
+    Senescent,
+    /// Смерть организма
+    Death,
+}
+
+impl DevelopmentalStage {
+    /// Возраст (в годах) начала стадии
+    pub fn age_start_years(&self) -> f64 {
+        match self {
+            DevelopmentalStage::Zygote        => 0.0,
+            DevelopmentalStage::Cleavage      => 0.0,
+            DevelopmentalStage::Blastocyst    => 0.0,
+            DevelopmentalStage::Gastrulation  => 0.0,
+            DevelopmentalStage::Organogenesis => 0.0,
+            DevelopmentalStage::Fetal         => 0.0,
+            DevelopmentalStage::Postnatal     => 0.0,
+            DevelopmentalStage::Adult         => 18.0,
+            DevelopmentalStage::MiddleAge     => 40.0,
+            DevelopmentalStage::Senescent     => 65.0,
+            DevelopmentalStage::Death         => 80.0,
+        }
+    }
+
+    /// Следующая стадия развития
+    pub fn next(&self) -> Option<DevelopmentalStage> {
+        match self {
+            DevelopmentalStage::Zygote        => Some(DevelopmentalStage::Cleavage),
+            DevelopmentalStage::Cleavage      => Some(DevelopmentalStage::Blastocyst),
+            DevelopmentalStage::Blastocyst    => Some(DevelopmentalStage::Gastrulation),
+            DevelopmentalStage::Gastrulation  => Some(DevelopmentalStage::Organogenesis),
+            DevelopmentalStage::Organogenesis => Some(DevelopmentalStage::Fetal),
+            DevelopmentalStage::Fetal         => Some(DevelopmentalStage::Postnatal),
+            DevelopmentalStage::Postnatal     => Some(DevelopmentalStage::Adult),
+            DevelopmentalStage::Adult         => Some(DevelopmentalStage::MiddleAge),
+            DevelopmentalStage::MiddleAge     => Some(DevelopmentalStage::Senescent),
+            DevelopmentalStage::Senescent     => Some(DevelopmentalStage::Death),
+            DevelopmentalStage::Death         => None,
+        }
+    }
+}
+
+/// Система индукторов дифференцировки (по CDATA)
+///
+/// S-структура: индукторы соматических клеток
+/// H-структура: индукторы гаметных клеток
+/// Каждый дифференцирующий митоз уменьшает счётчик на 1.
+/// При истощении — терминальная дифференцировка или мейоз.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CentriolarInducers {
+    /// Оставшихся соматических индукторов (S-структура)
+    pub s_count: u32,
+    /// Максимальный исходный запас S-индукторов
+    pub s_max: u32,
+    /// Оставшихся гаметных индукторов (H-структура)
+    pub h_count: u32,
+    /// Максимальный исходный запас H-индукторов
+    pub h_max: u32,
+    /// Суммарное число завершённых дифференцирующих делений
+    pub differentiation_divisions: u32,
+}
+
+impl CentriolarInducers {
+    /// Зигота: полный запас индукторов (~50 делений по Хейфлику)
+    pub fn zygote(s_max: u32, h_max: u32) -> Self {
+        Self {
+            s_count: s_max,
+            s_max,
+            h_count: h_max,
+            h_max,
+            differentiation_divisions: 0,
+        }
+    }
+
+    /// Морфогенетический статус S: 0.0 = тотипотентна, 1.0 = терминально дифференцирована
+    pub fn s_status(&self) -> f32 {
+        if self.s_max == 0 { return 1.0; }
+        1.0 - (self.s_count as f32 / self.s_max as f32)
+    }
+
+    /// Морфогенетический статус H: 0.0 = до мейоза, 1.0 = готова к мейозу
+    pub fn h_status(&self) -> f32 {
+        if self.h_max == 0 { return 1.0; }
+        1.0 - (self.h_count as f32 / self.h_max as f32)
+    }
+
+    /// Потребить один S-индуктор (дифференцирующее деление по соматической линии)
+    /// Возвращает true, если индуктор был доступен
+    pub fn consume_s_inducer(&mut self) -> bool {
+        if self.s_count > 0 {
+            self.s_count -= 1;
+            self.differentiation_divisions += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Потребить один H-индуктор (деление по линии половых клеток)
+    pub fn consume_h_inducer(&mut self) -> bool {
+        if self.h_count > 0 {
+            self.h_count -= 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Клетка достигла терминальной дифференцировки по соматической линии
+    pub fn is_terminally_differentiated(&self) -> bool {
+        self.s_count == 0
+    }
+
+    /// Клетка готова к мейозу
+    pub fn is_ready_for_meiosis(&self) -> bool {
+        self.h_count == 0 && self.h_max > 0
+    }
+}
+
+impl Default for CentriolarInducers {
+    fn default() -> Self {
+        Self::zygote(50, 4)
+    }
+}
+
+/// Состояние повреждений центриоли (CDATA)
+///
+/// Повреждения накапливаются необратимо в материнской центриоли
+/// стволовых клеток на протяжении всей жизни организма.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CentriolarDamageState {
+    // --- Молекулярные повреждения ---
+    /// Уровень карбонилирования белков (SAS-6, CEP135) — окислительный стресс
+    pub protein_carbonylation: f32,
+    /// Гиперацетилирование альфа-тубулина (снижение HDAC6/SIRT2) [0..1]
+    pub tubulin_hyperacetylation: f32,
+    /// Агрегаты белков (CPAP, CEP290) — блокируют аппарат дупликации [0..1]
+    pub protein_aggregates: f32,
+    /// Нарушение фосфорилирования (PLK4, NEK2, PP1) [0..1]
+    pub phosphorylation_dysregulation: f32,
+
+    // --- Потеря дистальных придатков ---
+    /// Целостность CEP164 (главный: инициация ресничек) [0..1]
+    pub cep164_integrity: f32,
+    /// Целостность CEP89 [0..1]
+    pub cep89_integrity: f32,
+    /// Целостность Ninein (субдистальные придатки, якорение) [0..1]
+    pub ninein_integrity: f32,
+    /// Целостность CEP170 [0..1]
+    pub cep170_integrity: f32,
+
+    // --- Производные функциональные метрики ---
+    /// Функциональность первичной реснички [0..1] — зависит от придатков
+    pub ciliary_function: f32,
+    /// Точность ориентации веретена деления [0..1] — определяет АКД
+    pub spindle_fidelity: f32,
+    /// Кумулятивный уровень ROS в нише (петля обратной связи)
+    pub ros_level: f32,
+
+    /// Общее число делений клетки (счётчик Хейфлика)
+    pub total_divisions: u32,
+    /// Клетка вошла в сенесценцию?
+    pub is_senescent: bool,
+}
+
+impl CentriolarDamageState {
+    /// Новорождённая центриоль (де-ново или в зиготе) — без повреждений
+    pub fn pristine() -> Self {
+        Self {
+            protein_carbonylation: 0.0,
+            tubulin_hyperacetylation: 0.0,
+            protein_aggregates: 0.0,
+            phosphorylation_dysregulation: 0.0,
+            cep164_integrity: 1.0,
+            cep89_integrity: 1.0,
+            ninein_integrity: 1.0,
+            cep170_integrity: 1.0,
+            ciliary_function: 1.0,
+            spindle_fidelity: 1.0,
+            ros_level: 0.05,
+            total_divisions: 0,
+            is_senescent: false,
+        }
+    }
+
+    /// Обновить производные метрики из молекулярных повреждений
+    pub fn update_functional_metrics(&mut self) {
+        // Функция реснички — зависит от целостности дистальных придатков
+        let appendage_mean = (self.cep164_integrity
+            + self.cep89_integrity
+            + self.ninein_integrity
+            + self.cep170_integrity) / 4.0;
+        self.ciliary_function = appendage_mean * (1.0 - self.protein_aggregates * 0.5);
+
+        // Точность веретена — деградирует от карбонилирования и агрегатов
+        let structural_damage = (self.protein_carbonylation + self.protein_aggregates) / 2.0;
+        self.spindle_fidelity = (1.0 - structural_damage).max(0.0)
+            * (1.0 - self.phosphorylation_dysregulation * 0.3);
+
+        // Сенесценция — когда суммарный ущерб превышает порог
+        let total_damage = self.total_damage_score();
+        if total_damage > 0.75 {
+            self.is_senescent = true;
+        }
+    }
+
+    /// Суммарный балл повреждений [0..1]
+    pub fn total_damage_score(&self) -> f32 {
+        let mol_damage = (self.protein_carbonylation
+            + self.tubulin_hyperacetylation
+            + self.protein_aggregates
+            + self.phosphorylation_dysregulation) / 4.0;
+        let appendage_loss = 1.0 - (self.cep164_integrity
+            + self.cep89_integrity
+            + self.ninein_integrity
+            + self.cep170_integrity) / 4.0;
+        (mol_damage + appendage_loss) / 2.0
+    }
+
+    /// Вероятность симметричного деления (оба потомка дифференцируются
+    /// ИЛИ оба самообновляются) — растёт по мере снижения spindle_fidelity
+    pub fn symmetric_division_probability(&self) -> f32 {
+        (1.0 - self.spindle_fidelity).powf(1.5)
+    }
+
+    /// Вероятность истощения пула (оба потомка дифференцируются)
+    pub fn pool_exhaustion_probability(&self) -> f32 {
+        self.symmetric_division_probability() * 0.6
+    }
+}
+
+impl Default for CentriolarDamageState {
+    fn default() -> Self {
+        Self::pristine()
+    }
+}
+
+/// Тип ткани для специфики стволовых ниш
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TissueType {
+    /// Нейральные стволовые клетки (СВЗ, зубчатая извилина)
+    Neural,
+    /// Гемопоэтические стволовые клетки (красный костный мозг)
+    Hematopoietic,
+    /// Кишечный эпителий (крипты Либеркюна)
+    IntestinalCrypt,
+    /// Мышечные клетки-сателлиты
+    Muscle,
+    /// Кожный эпителий (базальный слой)
+    Skin,
+    /// Половые клетки
+    Germline,
+}
+
+/// Состояние ткани — агрегированные метрики регенеративного потенциала
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TissueState {
+    pub tissue_type: TissueType,
+    /// Размер пула стволовых клеток (0..1, относительно молодого организма)
+    pub stem_cell_pool: f32,
+    /// Темп регенерации (0..1, относительно молодого организма)
+    pub regeneration_tempo: f32,
+    /// Доля сенесцентных клеток [0..1]
+    pub senescent_fraction: f32,
+    /// Средний возраст материнской центриоли в нише (в делениях)
+    pub mean_centriole_age: f32,
+    /// Функциональная ёмкость ткани [0..1]
+    pub functional_capacity: f32,
+}
+
+impl TissueState {
+    pub fn new(tissue_type: TissueType) -> Self {
+        Self {
+            tissue_type,
+            stem_cell_pool: 1.0,
+            regeneration_tempo: 1.0,
+            senescent_fraction: 0.0,
+            mean_centriole_age: 0.0,
+            functional_capacity: 1.0,
+        }
+    }
+
+    /// Обновить функциональную ёмкость из текущих метрик
+    pub fn update_functional_capacity(&mut self) {
+        self.functional_capacity = self.stem_cell_pool
+            * self.regeneration_tempo
+            * (1.0 - self.senescent_fraction * 0.8);
+    }
+}
+
+/// Глобальное состояние организма (уровень организм/особь)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrganismState {
+    /// Возраст в годах
+    pub age_years: f64,
+    /// Текущая стадия развития
+    pub developmental_stage: DevelopmentalStage,
+    /// Накопленный уровень системного воспаления (inflammaging) [0..1]
+    pub inflammaging_score: f32,
+    /// Интегральный индекс дряхлости [0..1]
+    pub frailty_index: f32,
+    /// Когнитивный индекс [0..1]
+    pub cognitive_index: f32,
+    /// Иммунный резерв [0..1]
+    pub immune_reserve: f32,
+    /// Мышечная масса (саркопения) [0..1]
+    pub muscle_mass: f32,
+    /// Жив ли организм
+    pub is_alive: bool,
+}
+
+impl OrganismState {
+    pub fn new() -> Self {
+        Self {
+            age_years: 0.0,
+            developmental_stage: DevelopmentalStage::Zygote,
+            inflammaging_score: 0.0,
+            frailty_index: 0.0,
+            cognitive_index: 1.0,
+            immune_reserve: 1.0,
+            muscle_mass: 1.0,
+            is_alive: true,
+        }
+    }
+}
+
+impl Default for OrganismState {
     fn default() -> Self {
         Self::new()
     }

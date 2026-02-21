@@ -228,10 +228,10 @@ impl ParameterValidator {
         }
         
         // Transcriptome
-        if state.transcriptome.enabled {
-            if state.transcriptome.mutation_rate < 0.0 || state.transcriptome.mutation_rate > 0.1 {
-                errors.push("❌ Mutation rate must be in [0, 0.1]".to_string());
-            }
+        if state.transcriptome.enabled
+            && (state.transcriptome.mutation_rate < 0.0 || state.transcriptome.mutation_rate > 0.1)
+        {
+            errors.push("❌ Mutation rate must be in [0, 0.1]".to_string());
         }
         
         // Asymmetric division
@@ -375,7 +375,7 @@ impl PythonExporter {
         
         // Simulation setup
         script.push_str("# Simulation setup\n");
-        script.push_str(&format!("sim = cell_dt.PySimulation(\n"));
+        script.push_str("sim = cell_dt.PySimulation(\n");
         script.push_str(&format!("    max_steps={},\n", state.simulation.max_steps));
         script.push_str(&format!("    dt={},\n", state.simulation.dt));
         script.push_str(&format!("    num_threads={},\n", state.simulation.num_threads.unwrap_or(1)));
@@ -389,7 +389,7 @@ impl PythonExporter {
         } else {
             script.push_str("sim.create_population(100)\n");
         }
-        script.push_str("\n");
+        script.push('\n');
         
         // Cell cycle parameters
         if state.cell_cycle.enabled {
@@ -408,7 +408,7 @@ impl PythonExporter {
         
         // Register modules
         script.push_str("# Register modules\n");
-        script.push_str(&format!("sim.register_modules(\n"));
+        script.push_str("sim.register_modules(\n");
         script.push_str(&format!("    enable_centriole={},\n", state.centriole.enabled));
         script.push_str(&format!("    enable_cell_cycle={},\n", state.cell_cycle.enabled));
         script.push_str(&format!("    enable_transcriptome={},\n", state.transcriptome.enabled));
@@ -596,6 +596,12 @@ impl ConfigApp {
         Self {
             state: ConfigAppState::default(),
         }
+    }
+}
+
+impl Default for ConfigApp {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -816,11 +822,11 @@ impl ConfigApp {
             ui.label("Output directory:");
             let output_str = self.state.simulation.output_dir.to_string_lossy().to_string();
             let mut output = output_str.clone();
-            if ui.text_edit_singleline(&mut output).changed() {
-                if output != output_str {
-                    self.state.simulation.output_dir = PathBuf::from(output);
-                    self.state.push_history();
-                }
+            if ui.text_edit_singleline(&mut output).changed()
+                && output != output_str
+            {
+                self.state.simulation.output_dir = PathBuf::from(output);
+                self.state.push_history();
             }
         });
         

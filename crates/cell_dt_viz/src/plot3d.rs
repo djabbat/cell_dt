@@ -41,6 +41,12 @@ impl ThreeDVisualizer {
     }
 }
 
+impl Default for ThreeDVisualizer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Visualizer for ThreeDVisualizer {
     fn name(&self) -> &str {
         "3DVisualizer"

@@ -1,0 +1,13 @@
+[package]
+name = "human_development_module"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+cell_dt_core = { path = "../../cell_dt_core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+rand = { workspace = true }
