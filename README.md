@@ -1,20 +1,19 @@
-# Cell DT Platform
+# Cell DT Platform - General Initial
 
-## 🚀 Quick Start
+## Quick Start
 
-Launch the GUI
+Launch the GUI:
 
-~/cell_dt/crates/cell_dt_gui
-
-cargo run
-
-Or via the launcher
-
-~/cell_dt
-
+```bash
+# From the project root
 ./cell_dt_launcher.sh gui
 
-## 📋 Table of Contents
+# Or run directly
+cd crates/cell_dt_gui && cargo run
+```
+
+## Table of Contents
+
 1. [Overview](#overview)
 2. [Architecture](#architecture)
 3. [Installation](#installation)
@@ -29,14 +28,14 @@ Or via the launcher
 12. [Contributing](#contributing)
 13. [License](#license)
 
-## 🔬 Overview
+## Overview
 
 **Cell DT** is a high-performance platform for simulating cell differentiation, written in Rust. The platform specializes in modeling the centriole as a key regulatory hub and supports creating digital twins for experimental research.
 
 ### Key Features
 
 - **Modular Architecture** — Easily plug and replace simulation modules
-- **ECS (Entity-Component System)** — Efficient management of large cell populations (10⁵-10⁶ cells)
+- **ECS (Entity-Component System)** — Efficient management of large cell populations (10⁵–10⁶ cells)
 - **Centriole Modeling** — Age tracking, PTM profiles, CAFD factors
 - **Cell Cycle Simulation** — Phases, checkpoints, cyclins, and CDKs
 - **Transcriptome Dynamics** — Gene expression, signaling pathways, transcription factors
@@ -48,27 +47,27 @@ Or via the launcher
 - **Checkpoints** — Save and load simulation state
 - **Real-time Visualization** — 2D/3D visualization of cell populations
 
-## 🏗 Architecture
+## Architecture
 
 ```
 cell_dt/
 ├── crates/
-│   ├── cell_dt_core/                 # Platform core (ECS, traits, manager)
+│   ├── cell_dt_core/                  # Platform core (ECS, traits, manager)
 │   ├── cell_dt_modules/               # Simulation modules
 │   │   ├── centriole_module/          # Centriole module
 │   │   ├── cell_cycle_module/         # Cell cycle module
 │   │   ├── transcriptome_module/      # Transcriptome module
 │   │   ├── asymmetric_division_module/ # Asymmetric division module
 │   │   └── stem_cell_hierarchy_module/ # Stem cell hierarchy module
-│   ├── cell_dt_io/                     # Data input/output
-│   ├── cell_dt_python/                  # Python bindings (PyO3)
-│   ├── cell_dt_viz/                      # Visualization
-│   ├── cell_dt_config/                    # Configuration management
-│   └── cell_dt_gui/                         # GUI configurator
-└── examples/                                 # Usage examples
+│   ├── cell_dt_io/                    # Data input/output
+│   ├── cell_dt_python/                # Python bindings (PyO3)
+│   ├── cell_dt_viz/                   # Visualization
+│   ├── cell_dt_config/                # Configuration management
+│   └── cell_dt_gui/                   # GUI configurator
+└── examples/                          # Usage examples
 ```
 
-## 📦 Installation
+## Installation
 
 ### Prerequisites
 
@@ -93,9 +92,9 @@ cargo test
 cargo doc --open
 ```
 
-## ⚙️ Core Modules
+## Core Modules
 
-### 1. **Centriole Module** (`centriole_module`)
+### 1. Centriole Module (`centriole_module`)
 
 Simulates centriole behavior including maturation, PTM modifications, and CAFD factors.
 
@@ -113,7 +112,7 @@ let module = CentrioleModule::with_parallel(true);
 - `age_effect_factor`: How age affects centriole function
 - `parallel_cells`: Enable parallel processing
 
-### 2. **Cell Cycle Module** (`cell_cycle_module`)
+### 2. Cell Cycle Module (`cell_cycle_module`)
 
 Models cell cycle phases, checkpoints, cyclins, and CDKs.
 
@@ -133,7 +132,7 @@ let module = CellCycleModule::with_params(params);
 **Phases:** G1, S, G2, M
 **Checkpoints:** G1/S restriction, G2/M, spindle assembly, DNA repair
 
-### 3. **Transcriptome Module** (`transcriptome_module`)
+### 3. Transcriptome Module (`transcriptome_module`)
 
 Simulates gene expression, signaling pathways, and transcription factors.
 
@@ -152,7 +151,7 @@ let module = TranscriptomeModule::with_params(params);
 **Key Genes:** CCND1, CCNE1, CCNA2, CCNB1, TP53, NANOG, CETN1, PCNT
 **Pathways:** Wnt, Hippo, JAK/STAT, MAPK, PI3K
 
-## 🎛️ Configuration System
+## Configuration System
 
 ### Configuration Files
 
@@ -208,7 +207,7 @@ buffer_size = 1000
 ./manage_configs.sh validate configs/example.toml
 ```
 
-## 🖥️ GUI Configurator
+## GUI Configurator
 
 The graphical interface allows visual configuration of all simulation parameters.
 
@@ -226,14 +225,14 @@ cd crates/cell_dt_gui && cargo run
 
 | Tab | Parameters |
 |-----|------------|
-| ⚙️ Simulation | Steps, dt, threads, seed, output |
-| 🔬 Centriole | Acetylation, oxidation, MTOC, CAFD |
-| 🔄 Cell Cycle | Phase durations, checkpoints, apoptosis |
-| 🧬 Transcriptome | Mutation rate, noise, pathways |
-| ⚖️ Asymmetric Division | Division probabilities, niches |
-| 🌱 Stem Hierarchy | Potency levels, lineages, plasticity |
-| 💾 Export | Format, compression, checkpoints |
-| 📊 Visualization | Plot types, intervals, 3D |
+| Simulation | Steps, dt, threads, seed, output |
+| Centriole | Acetylation, oxidation, MTOC, CAFD |
+| Cell Cycle | Phase durations, checkpoints, apoptosis |
+| Transcriptome | Mutation rate, noise, pathways |
+| Asymmetric Division | Division probabilities, niches |
+| Stem Hierarchy | Potency levels, lineages, plasticity |
+| Export | Format, compression, checkpoints |
+| Visualization | Plot types, intervals, 3D |
 
 ### Parameter Categories
 
@@ -241,10 +240,10 @@ cd crates/cell_dt_gui && cargo run
 ┌─────────────────────────────────────┐
 │  Cell DT - Simulation Configurator  │
 ├─────────────────────────────────────┤
-│ 📂 Load  💾 Save  ▶️ Run  ❌ Exit   │
+│ Load  Save  Run  Exit               │
 ├─────────────────────────────────────┤
-│ ⚙️ Sim  🔬 Cent  🔄 Cycle  🧬 Trans │
-│ ⚖️ Asym  🌱 Stem  💾 Exp  📊 Viz   │
+│ Sim  Cent  Cycle  Trans             │
+│ Asym  Stem  Export  Viz            │
 ├─────────────────────────────────────┤
 │ • Max Steps:    [████████░░] 10000  │
 │ • dt:           [██░░░░░░░░] 0.1    │
@@ -254,9 +253,9 @@ cd crates/cell_dt_gui && cargo run
 └─────────────────────────────────────┘
 ```
 
-## 🌱 Stem Cell Biology Modules
+## Stem Cell Biology Modules
 
-### 11. **Asymmetric Division Module**
+### 4. Asymmetric Division Module (`asymmetric_division_module`)
 
 Models how stem cells divide asymmetrically to maintain the stem cell pool while producing differentiated progeny.
 
@@ -287,7 +286,7 @@ let niche_id = module.create_niche(0.0, 0.0, 0.0, 5.0);
 - **Self-renewal**: Both daughter cells are stem cells
 - **Differentiation**: Both daughter cells differentiate
 
-### 12. **Stem Cell Hierarchy Module**
+### 5. Stem Cell Hierarchy Module (`stem_cell_hierarchy_module`)
 
 Models different levels of stem cell potency and differentiation pathways.
 
@@ -323,7 +322,7 @@ let module = StemCellHierarchyModule::with_params(params);
 | **Unipotent** | Can form one cell type | Spermatogonial stem cells |
 | **Differentiated** | Terminally differentiated | Neuron, muscle cell |
 
-## 🧪 Testing & Documentation
+## Testing & Documentation
 
 ### Running Tests
 
@@ -361,7 +360,7 @@ cargo doc --open
 cargo doc --document-private-items --open
 ```
 
-## 🚀 Performance Optimization
+## Performance Optimization
 
 ### Profiling
 
@@ -391,15 +390,14 @@ perf report
 |--------------|-----------|-----------|-----------|-----------|
 | Baseline | 0.05s | 0.5s | 5s | 50s |
 | Optimized | 0.008s | 0.08s | 0.8s | 8s |
-| MPI (32 nodes) | - | - | 0.1s | 1s |
+| MPI (32 nodes) | — | — | 0.1s | 1s |
 
-## 🐍 Python Bindings
+## Python Bindings
 
 ### Installation
 
 ```bash
 # Create virtual environment
-cd /home/oem/Documents/Projects/rust/cell_dt
 python3 -m venv venv
 source venv/bin/activate
 
@@ -451,7 +449,7 @@ plt.bar(phase_dist.keys(), phase_dist.values())
 plt.show()
 ```
 
-## 📚 Examples
+## Examples
 
 ### Basic Simulation
 
@@ -497,7 +495,7 @@ cargo run --bin io_example
 cargo run --bin performance_test
 ```
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Please follow these steps:
 
@@ -517,28 +515,28 @@ Contributions are welcome! Please follow these steps:
 - Run `cargo fmt` before committing
 - Ensure all tests pass with `cargo test`
 
-## 📝 License
+## License
 
 This project is licensed under either of:
 
-- MIT License ([LICENSE-MIT](LICENSE-MIT))
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT License
+- Apache License, Version 2.0
 
-at your option.
+at your option. See [LICENSE](LICENSE) for details.
 
-## 📧 Contact
+## Contact
 
-**Jaba Tkemaladze** - [@djabbat](https://github.com/djabbat)
+**Jaba Tkemaladze** — [@djabbat](https://github.com/djabbat)
 
 Project Link: [https://github.com/djabbat/cell_dt](https://github.com/djabbat/cell_dt)
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - Based on research from the dissertation on centriole biology
 - Inspired by the need for high-performance biological simulations
 - Thanks to the Rust community for excellent tools and libraries
 
-## 📚 Citation
+## Citation
 
 If you use this platform in your research, please cite:
 
@@ -551,32 +549,34 @@ If you use this platform in your research, please cite:
 }
 ```
 
-## 🗺 Roadmap
+## Roadmap
 
-### Version 0.2.0 (Current)
-- ✅ Core platform with ECS
-- ✅ Centriole module with PTM tracking
-- ✅ Cell cycle module with checkpoints
-- ✅ Transcriptome module with gene expression
-- ✅ Asymmetric division module
-- ✅ Stem cell hierarchy module
-- ✅ GUI configurator
-- ✅ Python bindings
-- ✅ Data export (CSV, Parquet, HDF5)
-- ✅ Visualization (2D/3D)
+### Version 0.1.0 (Current)
 
-### Version 0.3.0 (Planned)
-- ⬜ 3D spatial modeling
-- ⬜ Cell-cell interactions
-- ⬜ Tissue-level simulations
-- ⬜ Machine learning integration
-- ⬜ Real-time visualization with WebGL
-- ⬜ Disease models (cancer, aging)
+- [x] Core platform with ECS
+- [x] Centriole module with PTM tracking
+- [x] Cell cycle module with checkpoints
+- [x] Transcriptome module with gene expression
+- [x] Asymmetric division module
+- [x] Stem cell hierarchy module
+- [x] GUI configurator
+- [x] Python bindings
+- [x] Data export (CSV, Parquet, HDF5)
+- [x] Visualization (2D/3D)
+
+### Version 0.2.0 (Planned)
+
+- [ ] 3D spatial modeling
+- [ ] Cell-cell interactions
+- [ ] Tissue-level simulations
+- [ ] Machine learning integration
+- [ ] Real-time visualization with WebGL
+- [ ] Disease models (cancer, aging)
 
 ### Version 1.0.0 (Future)
-- ⬜ Full organoid simulation
-- ⬜ Drug screening module
-- ⬜ Integration with single-cell RNA-seq data
-- ⬜ Cloud computing support
-- ⬜ Web-based interface
-```
+
+- [ ] Full organoid simulation
+- [ ] Drug screening module
+- [ ] Integration with single-cell RNA-seq data
+- [ ] Cloud computing support
+- [ ] Web-based interface
