@@ -41,16 +41,21 @@ pub struct DamageParams {
 impl Default for DamageParams {
     fn default() -> Self {
         Self {
-            // Калибровка: при этих значениях смерть наступает ~78 лет (норма)
-            base_ros_damage_rate:        0.0018,
-            acetylation_rate:            0.0014,
-            aggregation_rate:            0.0014,
-            phospho_dysregulation_rate:  0.0010,
+            // Калибровка для шага dt = 1 день (1/365.25 лет):
+            // при этих значениях is_senescent (total_damage_score > 0.75)
+            // наступает ~78 лет (норма, с midlife_damage_multiplier ×1.6 после 40 лет
+            // и петлёй обратной связи ROS).
+            // Молекулярные скорости ×4.2 от первичных биохимических оценок:
+            base_ros_damage_rate:       0.0076,   // карбонилирование SAS-6 / CEP135 (×ROS)
+            acetylation_rate:           0.0059,   // гиперацетилирование α-тубулина
+            aggregation_rate:           0.0059,   // агрегаты CPAP / CEP290
+            phospho_dysregulation_rate: 0.0042,   // дисбаланс PLK4 / NEK2 / PP1
 
-            cep164_loss_rate: 0.0027,
-            cep89_loss_rate:  0.0020,
-            ninein_loss_rate: 0.0020,
-            cep170_loss_rate: 0.0016,
+            // Потеря дистальных придатков (×4.2):
+            cep164_loss_rate: 0.0113,  // инициация ресничек (CEP164)
+            cep89_loss_rate:  0.0084,  // CEP89
+            ninein_loss_rate: 0.0084,  // Ninein (субдистальные придатки)
+            cep170_loss_rate: 0.0067,  // CEP170
 
             ros_feedback_coefficient:   0.12,
             sasp_onset_age:             45.0,

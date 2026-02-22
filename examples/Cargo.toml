@@ -60,5 +60,5 @@ name = "stem_cell_example"
 path = "src/bin/stem_cell_example.rs"
 
 [[bin]]
-name = "human_lifecycle"
-path = "src/bin/human_lifecycle.rs"
+name = "human_development_example"
+path = "src/bin/human_development_example.rs"
