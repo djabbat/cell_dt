@@ -2,7 +2,7 @@
 
 > Подробный приоритизированный список: см. **RECOMMENDATION.md**
 > Последнее обновление: 2026-03-04
-> Тесты: **57/57 ✅** | Смерть: ~78 лет ✅ | mBias@70y: 0.57 ✅ | Треки A/B/C/D ✅
+> Тесты: **61/61 ✅** | Смерть: ~78 лет ✅ | mBias@70y: 0.57 ✅ | Треки A/B/C/D ✅
 
 ---
 
@@ -112,12 +112,33 @@
 
 ---
 
+## ✅ Реализовано (сессия 3)
+
+### Dead marker + очистка мёртвых сущностей ✅ NEW
+- `Dead` маркер-компонент в `cell_dt_core::components`
+- `cleanup_dead_interval: Option<u64>` в `SimulationConfig`
+- `SimulationManager::cleanup_dead_entities()` — удаление сущностей с Dead
+- `human_development_module` вставляет Dead при гибели клетки (двухфазовый паттерн)
+- 2 unit-теста: cleanup_removes_dead_entities, cleanup_preserves_alive_entities
+
+### DamageParams через панель управления ✅ NEW
+- `damage_rates: DamageParams` + `damage_rates_dirty: bool` в `HumanDevelopmentModule`
+- `get_params()`: все 12 полей DamageParams доступны через JSON
+- `set_params()`: `damage_preset` ("normal"/"progeria"/"longevity") + отдельные поля
+- Синхронизация с сущностями в `step()` при изменении
+
+### StemCellHierarchy пластичность ✅ NEW
+- `dedifferentiation_count: u32` в `StemCellHierarchyState`
+- Дедифференцировка: Oligopotent → Pluripotent при `spindle_fidelity > threshold && rng < plasticity_rate`
+- 2 unit-теста: test_plasticity_dedifferentiation_occurs, test_no_plasticity_when_disabled
+
+---
+
 ## 🔧 Следующие шаги (по приоритету)
 
-1. **Спавн дочерних сущностей** (`asymmetric_division_module`) — создание новых entity при делении
-2. **StemCellHierarchy пластичность** — де-дифференцировка при `enable_plasticity=true`
-3. **CSV-экспорт** — подключить `DataExporter` к `SimulationManager`
-4. **Python-биндинги** — `cell_dt_python` (PyO3, `run_simulation() → DataFrame`)
+1. **CSV-экспорт CDATA** — `SimulationSnapshot` компонент + `CdataExporter` в `cell_dt_io`
+2. **Спавн дочерних сущностей** (`asymmetric_division_module`) — создание новых entity при делении
+3. **Python-биндинги** — `cell_dt_python` (PyO3, `run_simulation() → DataFrame`)
 
 ## ⬜ Долгосрочные планы
 

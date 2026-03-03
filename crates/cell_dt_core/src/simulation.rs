@@ -1,5 +1,6 @@
 use crate::{
     SimulationError, SimulationModule, SimulationResult,
+    Dead,
     hecs::World,
 };
 use std::collections::HashMap;
@@ -14,6 +15,9 @@ pub struct SimulationConfig {
     pub num_threads: Option<usize>,
     pub seed: Option<u64>,
     pub parallel_modules: bool,
+    /// Интервал очистки мёртвых сущностей (в шагах). `None` — очистка отключена.
+    /// Мёртвые сущности определяются наличием компонента `Dead`.
+    pub cleanup_dead_interval: Option<u64>,
 }
 
 impl Default for SimulationConfig {
@@ -25,6 +29,7 @@ impl Default for SimulationConfig {
             num_threads: None,
             seed: Some(42),
             parallel_modules: false,
+            cleanup_dead_interval: None,
         }
     }
 }
@@ -88,17 +93,45 @@ impl SimulationManager {
         if self.current_step >= self.config.max_steps {
             return Ok(());
         }
-        
+
         let dt = self.config.dt;
-        
+
         for (_name, module) in self.modules.iter_mut() {
             module.step(&mut self.world, dt)?;
         }
-        
+
+        // Периодическая очистка мёртвых сущностей (компонент Dead)
+        if let Some(interval) = self.config.cleanup_dead_interval {
+            if interval > 0 && self.current_step % interval == 0 {
+                let removed = self.cleanup_dead_entities();
+                if removed > 0 {
+                    debug!("Cleanup step {}: удалено {} мёртвых сущностей", self.current_step, removed);
+                }
+            }
+        }
+
         self.current_step += 1;
         self.current_time += dt;
-        
+
         Ok(())
+    }
+
+    /// Удалить все сущности с компонентом [`Dead`] из ECS-мира.
+    ///
+    /// Вызывается автоматически в [`step()`] с интервалом `cleanup_dead_interval`.
+    /// Может также вызываться вручную для немедленной очистки.
+    /// Возвращает число удалённых сущностей.
+    pub fn cleanup_dead_entities(&mut self) -> usize {
+        let dead: Vec<hecs::Entity> = self.world
+            .query::<&Dead>()
+            .iter()
+            .map(|(e, _)| e)
+            .collect();
+        let count = dead.len();
+        for entity in dead {
+            let _ = self.world.despawn(entity);
+        }
+        count
     }
     
     pub fn run(&mut self) -> SimulationResult<()> {
@@ -146,9 +179,10 @@ impl SimulationManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+    use crate::Dead;
+
     struct TestModule;
-    
+
     impl SimulationModule for TestModule {
         fn name(&self) -> &str { "test_module" }
         fn step(&mut self, _world: &mut World, _dt: f64) -> SimulationResult<()> { Ok(()) }
@@ -184,13 +218,39 @@ mod tests {
             dt: 0.5,
             ..Default::default()
         };
-        
+
         let mut sim = SimulationManager::new(config);
-        
+
         for i in 0..5 {
             sim.step().unwrap();
             assert_eq!(sim.current_step(), i + 1);
             assert_eq!(sim.current_time(), (i + 1) as f64 * 0.5);
         }
+    }
+
+    #[test]
+    fn test_cleanup_removes_dead_entities() {
+        let mut sim = SimulationManager::new(SimulationConfig::default());
+        let dead_entity = sim.world_mut().spawn((Dead,));
+        let alive_entity = sim.world_mut().spawn((crate::components::Position::default(),));
+
+        let removed = sim.cleanup_dead_entities();
+
+        assert_eq!(removed, 1, "Должна быть удалена 1 мёртвая сущность");
+        assert!(!sim.world().contains(dead_entity), "Dead entity должна быть удалена");
+        assert!(sim.world().contains(alive_entity), "Alive entity должна оставаться");
+    }
+
+    #[test]
+    fn test_cleanup_preserves_alive_entities() {
+        let mut sim = SimulationManager::new(SimulationConfig::default());
+        let entity1 = sim.world_mut().spawn((crate::components::Position::default(),));
+        let entity2 = sim.world_mut().spawn((crate::components::Position::default(),));
+
+        let removed = sim.cleanup_dead_entities();
+
+        assert_eq!(removed, 0, "Без Dead-маркеров ничего не должно удаляться");
+        assert!(sim.world().contains(entity1));
+        assert!(sim.world().contains(entity2));
     }
 }

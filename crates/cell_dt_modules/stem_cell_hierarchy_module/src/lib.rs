@@ -14,6 +14,7 @@ use cell_dt_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use log::{info, debug};
+use rand::Rng;
 
 // PotencyLevel определён в cell_dt_core::components (glob-импорт выше).
 // Переэкспортируем для совместимости с существующими примерами.
@@ -34,6 +35,8 @@ pub struct StemCellHierarchyState {
     pub potency_score: f32,
     pub lineage: Option<CellLineage>,
     pub master_regulator_levels: std::collections::HashMap<String, f32>,
+    /// Число событий дедифференцировки (Oligopotent → Pluripotent) за жизнь клетки
+    pub dedifferentiation_count: u32,
 }
 
 impl StemCellHierarchyState {
@@ -47,6 +50,7 @@ impl StemCellHierarchyState {
             potency_score: 0.8,
             lineage: None,
             master_regulator_levels: regs,
+            dedifferentiation_count: 0,
         }
     }
 
@@ -115,13 +119,40 @@ impl SimulationModule for StemCellHierarchyModule {
     ///
     /// Использует `spindle_fidelity` как прокси потентности:
     /// высокая точность веретена → клетка сохраняет стволовость.
+    ///
+    /// При `enable_plasticity=true`: клетки на уровне `Oligopotent` могут
+    /// дедифференцироваться обратно в `Pluripotent`, если веретено восстановилось
+    /// (spindle_fidelity > `differentiation_threshold`).
     fn step(&mut self, world: &mut World, _dt: f64) -> SimulationResult<()> {
         self.step_count += 1;
         debug!("Stem cell hierarchy step {}", self.step_count);
 
+        let enable_plasticity    = self.params.enable_plasticity;
+        let plasticity_rate      = self.params.plasticity_rate;
+        let plasticity_threshold = self.params.differentiation_threshold;
+
+        let mut rng = rand::thread_rng();
+
         for (_, (hierarchy, damage)) in
             world.query_mut::<(&mut StemCellHierarchyState, &CentriolarDamageState)>()
         {
+            // Пластичность: Oligopotent → Pluripotent при восстановлении веретена
+            if enable_plasticity
+                && hierarchy.potency_level == PotencyLevel::Oligopotent
+                && damage.spindle_fidelity > plasticity_threshold
+                && rng.gen::<f32>() < plasticity_rate
+            {
+                hierarchy.set_potency(PotencyLevel::Pluripotent);
+                hierarchy.dedifferentiation_count += 1;
+                debug!(
+                    "Dedifferentiation event: Oligopotent → Pluripotent \
+                     (spindle={:.3}, count={})",
+                    damage.spindle_fidelity, hierarchy.dedifferentiation_count
+                );
+                continue; // уже обновили потентность
+            }
+
+            // Стандартная синхронизация потентности из spindle_fidelity
             let new_potency = if damage.spindle_fidelity > 0.95 {
                 PotencyLevel::Totipotent
             } else if damage.spindle_fidelity > 0.75 {
@@ -149,6 +180,9 @@ impl SimulationModule for StemCellHierarchyModule {
             "plasticity_rate":           self.params.plasticity_rate,
             "differentiation_threshold": self.params.differentiation_threshold,
             "step_count":                self.step_count,
+            // Порог восстановления spindle_fidelity для дедифференцировки
+            // (то же поле что differentiation_threshold, но с явным именем)
+            "plasticity_spindle_threshold": self.params.differentiation_threshold,
         })
     }
 
@@ -217,5 +251,101 @@ pub mod factories {
         state.set_potency(PotencyLevel::Oligopotent);
         state.lineage = Some(CellLineage::NeuralStem);
         state
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cell_dt_core::components::{CentriolarDamageState, CellCycleStateExtended};
+    use cell_dt_core::{SimulationManager, SimulationConfig};
+
+    fn make_damaged_damage_state(spindle: f32) -> CentriolarDamageState {
+        let mut d = CentriolarDamageState::pristine();
+        // Принудительно выставляем spindle_fidelity через производные поля
+        // (spindle_fidelity вычисляется в update_functional_metrics)
+        // Для теста проще выставить напрямую:
+        d.spindle_fidelity = spindle;
+        d
+    }
+
+    /// Dedifferentiation: Oligopotent → Pluripotent при восстановлении веретена
+    #[test]
+    fn test_plasticity_dedifferentiation_occurs() {
+        let params = StemCellHierarchyParams {
+            enable_plasticity: true,
+            plasticity_rate: 1.0,         // 100% вероятность для детерминизма
+            differentiation_threshold: 0.6,
+            initial_potency: PotencyLevel::Oligopotent,
+        };
+        let mut module = StemCellHierarchyModule::with_params(params);
+
+        let config = SimulationConfig::default();
+        let mut sim = SimulationManager::new(config);
+
+        // Спавним сущность с CellCycleStateExtended (нужен для initialize)
+        let entity = sim.world_mut().spawn((
+            CellCycleStateExtended::new(),
+            make_damaged_damage_state(0.8), // spindle > threshold (0.6)
+        ));
+        module.initialize(sim.world_mut()).unwrap();
+
+        // Ставим Oligopotent вручную
+        {
+            let mut q = sim.world_mut().query::<&mut StemCellHierarchyState>();
+            for (_, h) in q.iter() {
+                h.set_potency(PotencyLevel::Oligopotent);
+                h.dedifferentiation_count = 0;
+            }
+        }
+
+        // Один шаг модуля — должна произойти дедифференцировка
+        module.step(sim.world_mut(), 1.0).unwrap();
+
+        let mut q = sim.world_mut().query::<&StemCellHierarchyState>();
+        let (_, h) = q.iter().find(|(e, _)| *e == entity).unwrap();
+        assert_eq!(h.potency_level, PotencyLevel::Pluripotent,
+            "При spindle_fidelity > threshold и plasticity_rate=1.0 должна быть дедифференцировка");
+        assert_eq!(h.dedifferentiation_count, 1,
+            "dedifferentiation_count должен быть 1");
+    }
+
+    /// Без пластичности Oligopotent не поднимается до Pluripotent
+    #[test]
+    fn test_no_plasticity_when_disabled() {
+        let params = StemCellHierarchyParams {
+            enable_plasticity: false,
+            plasticity_rate: 1.0,
+            differentiation_threshold: 0.6,
+            initial_potency: PotencyLevel::Oligopotent,
+        };
+        let mut module = StemCellHierarchyModule::with_params(params);
+
+        let config = SimulationConfig::default();
+        let mut sim = SimulationManager::new(config);
+
+        let entity = sim.world_mut().spawn((
+            CellCycleStateExtended::new(),
+            make_damaged_damage_state(0.8),
+        ));
+        module.initialize(sim.world_mut()).unwrap();
+
+        // Вручную ставим Oligopotent (spindle=0.8 → initialize даст Pluripotent, сбиваем)
+        {
+            let mut q = sim.world_mut().query::<&mut StemCellHierarchyState>();
+            for (_, h) in q.iter() {
+                h.potency_level = PotencyLevel::Oligopotent;
+                h.dedifferentiation_count = 0;
+            }
+        }
+
+        module.step(sim.world_mut(), 1.0).unwrap();
+
+        // При enable_plasticity=false и spindle=0.8: нормальная синхронизация
+        // spindle=0.8 > 0.75 → Pluripotent (через стандартный путь), count не меняется
+        let mut q = sim.world_mut().query::<&StemCellHierarchyState>();
+        let (_, h) = q.iter().find(|(e, _)| *e == entity).unwrap();
+        assert_eq!(h.dedifferentiation_count, 0,
+            "Без enable_plasticity dedifferentiation_count не должен увеличиваться");
     }
 }

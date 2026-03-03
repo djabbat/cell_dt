@@ -161,6 +161,7 @@ impl PySimulation {
             num_threads,
             seed,
             parallel_modules: false,
+        cleanup_dead_interval: None,
         };
         
         Self {

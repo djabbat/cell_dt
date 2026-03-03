@@ -28,6 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         num_threads: Some(4),
         seed: Some(42),
         parallel_modules: false,
+        cleanup_dead_interval: None,
     };
     
     let max_steps = config.max_steps;

@@ -53,8 +53,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         num_threads: loaded_config.simulation.num_threads,
         seed: loaded_config.simulation.seed,
         parallel_modules: false,
+        cleanup_dead_interval: None,
     };
-    
+
     // Initialize simulation
     let mut sim = SimulationManager::new(sim_config);
     

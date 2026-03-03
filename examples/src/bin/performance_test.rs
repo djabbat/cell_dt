@@ -43,6 +43,7 @@ fn test_with_config(num_cells: usize, parallel_cells: bool) -> Result<f64, Box<d
         num_threads: Some(8),
         seed: Some(42),
         parallel_modules: false,  // Модули выполняем последовательно
+        cleanup_dead_interval: None,
     };
     
     let mut sim = SimulationManager::new(config);

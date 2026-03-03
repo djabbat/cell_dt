@@ -17,7 +17,7 @@
 
 use cell_dt_core::{
     SimulationModule, SimulationResult,
-    hecs::World,
+    hecs::{World, Entity},
     components::{
         CentriolarDamageState, CentriolarInducerPair, PotencyLevel,
         TissueState, TissueType,
@@ -27,6 +27,7 @@ use cell_dt_core::{
         CentriolePair,
         TelomereState,
         EpigeneticClockState,
+        Dead,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -188,15 +189,30 @@ impl Default for HumanDevelopmentParams {
 pub struct HumanDevelopmentModule {
     params: HumanDevelopmentParams,
     step_count: u64,
+    /// Параметры накопления повреждений (панель управления).
+    /// Синхронизируются с `comp.damage_rates` всех живых сущностей при изменении.
+    damage_rates: DamageParams,
+    /// Флаг: параметры повреждений изменились через `set_params()` — нужна синхронизация.
+    damage_rates_dirty: bool,
 }
 
 impl HumanDevelopmentModule {
     pub fn new() -> Self {
-        Self { params: HumanDevelopmentParams::default(), step_count: 0 }
+        Self {
+            params: HumanDevelopmentParams::default(),
+            step_count: 0,
+            damage_rates: DamageParams::default(),
+            damage_rates_dirty: false,
+        }
     }
 
     pub fn with_params(params: HumanDevelopmentParams) -> Self {
-        Self { params, step_count: 0 }
+        Self {
+            params,
+            step_count: 0,
+            damage_rates: DamageParams::default(),
+            damage_rates_dirty: false,
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -320,6 +336,18 @@ impl Default for HumanDevelopmentModule {
     fn default() -> Self { Self::new() }
 }
 
+impl HumanDevelopmentModule {
+    /// Синхронизировать `damage_rates` со всеми живыми сущностями.
+    /// Вызывается в `step()` при `damage_rates_dirty == true`.
+    fn sync_damage_rates(&self, world: &mut World) {
+        for (_, comp) in world.query_mut::<&mut HumanDevelopmentComponent>() {
+            if comp.is_alive {
+                comp.damage_rates = self.damage_rates.clone();
+            }
+        }
+    }
+}
+
 impl SimulationModule for HumanDevelopmentModule {
     fn name(&self) -> &str { "human_development_module" }
 
@@ -329,6 +357,12 @@ impl SimulationModule for HumanDevelopmentModule {
         let dt_years = (dt_days / 365.25) as f32;
 
         debug!("Human development step {}, dt_days={:.3}", self.step_count, dt_days);
+
+        // Синхронизировать DamageParams если они были изменены через set_params()
+        if self.damage_rates_dirty {
+            self.sync_damage_rates(world);
+            self.damage_rates_dirty = false;
+        }
 
         let mut rng = rand::thread_rng();
 
@@ -528,6 +562,21 @@ impl SimulationModule for HumanDevelopmentModule {
         }
         } // drop query — освобождаем borrow на world
 
+        // Шаг 1б: вставить Dead-маркер на только что умершие сущности.
+        // Двухфазовый паттерн: сначала собираем мёртвые entity, потом вставляем.
+        // SimulationManager::cleanup_dead_entities() удалит их при очередной очистке.
+        {
+            let dead_entities: Vec<Entity> = world
+                .query::<&HumanDevelopmentComponent>()
+                .iter()
+                .filter(|(_, comp)| !comp.is_alive)
+                .map(|(e, _)| e)
+                .collect();
+            for entity in dead_entities {
+                let _ = world.insert_one(entity, Dead);
+            }
+        }
+
         // Шаг 2: синхронизировать отдельный ECS-компонент CentriolarDamageState
         // чтобы stem_cell_hierarchy и asymmetric_division могли читать повреждения
         // без зависимости от human_development_module.
@@ -542,16 +591,32 @@ impl SimulationModule for HumanDevelopmentModule {
 
     fn get_params(&self) -> Value {
         json!({
+            // Параметры симуляции
             "time_acceleration":       self.params.time_acceleration,
             "enable_aging":            self.params.enable_aging,
             "enable_morphogenesis":    self.params.enable_morphogenesis,
             "tissue_detail_level":     self.params.tissue_detail_level,
+            // Параметры индукторов
             "mother_inducer_count":    self.params.mother_inducer_count,
             "daughter_inducer_count":  self.params.daughter_inducer_count,
             "base_detach_probability": self.params.base_detach_probability,
             "mother_bias":             self.params.mother_bias,
             "age_bias_coefficient":    self.params.age_bias_coefficient,
             "ptm_exhaustion_scale":    self.params.ptm_exhaustion_scale,
+            // Параметры накопления повреждений (DamageParams)
+            "base_ros_damage_rate":         self.damage_rates.base_ros_damage_rate,
+            "acetylation_rate":             self.damage_rates.acetylation_rate,
+            "aggregation_rate":             self.damage_rates.aggregation_rate,
+            "phospho_dysregulation_rate":   self.damage_rates.phospho_dysregulation_rate,
+            "senescence_threshold":         self.damage_rates.senescence_threshold,
+            "midlife_damage_multiplier":    self.damage_rates.midlife_damage_multiplier,
+            "ros_feedback_coefficient":     self.damage_rates.ros_feedback_coefficient,
+            "sasp_onset_age":               self.damage_rates.sasp_onset_age,
+            "cep164_loss_rate":             self.damage_rates.cep164_loss_rate,
+            "cep89_loss_rate":              self.damage_rates.cep89_loss_rate,
+            "ninein_loss_rate":             self.damage_rates.ninein_loss_rate,
+            "cep170_loss_rate":             self.damage_rates.cep170_loss_rate,
+            // Служебное
             "step_count":              self.step_count,
         })
     }
@@ -595,6 +660,39 @@ impl SimulationModule for HumanDevelopmentModule {
         set_f32!("mother_bias",             self.params.mother_bias);
         set_f32!("age_bias_coefficient",    self.params.age_bias_coefficient);
         set_f32!("ptm_exhaustion_scale",    self.params.ptm_exhaustion_scale);
+
+        // DamageParams: preset (заменяет все значения сразу)
+        if let Some(preset) = params.get("damage_preset").and_then(|v| v.as_str()) {
+            self.damage_rates = match preset {
+                "progeria"  => DamageParams::progeria(),
+                "longevity" => DamageParams::longevity(),
+                _           => DamageParams::normal_aging(),
+            };
+            self.damage_rates_dirty = true;
+        }
+
+        // DamageParams: отдельные поля (перекрывают preset если указаны вместе)
+        macro_rules! set_dr {
+            ($key:literal, $field:expr) => {
+                if let Some(v) = params.get($key).and_then(|v| v.as_f64()) {
+                    $field = v as f32;
+                    self.damage_rates_dirty = true;
+                }
+            };
+        }
+        set_dr!("base_ros_damage_rate",       self.damage_rates.base_ros_damage_rate);
+        set_dr!("acetylation_rate",           self.damage_rates.acetylation_rate);
+        set_dr!("aggregation_rate",           self.damage_rates.aggregation_rate);
+        set_dr!("phospho_dysregulation_rate", self.damage_rates.phospho_dysregulation_rate);
+        set_dr!("senescence_threshold",       self.damage_rates.senescence_threshold);
+        set_dr!("midlife_damage_multiplier",  self.damage_rates.midlife_damage_multiplier);
+        set_dr!("ros_feedback_coefficient",   self.damage_rates.ros_feedback_coefficient);
+        set_dr!("sasp_onset_age",             self.damage_rates.sasp_onset_age);
+        set_dr!("cep164_loss_rate",           self.damage_rates.cep164_loss_rate);
+        set_dr!("cep89_loss_rate",            self.damage_rates.cep89_loss_rate);
+        set_dr!("ninein_loss_rate",           self.damage_rates.ninein_loss_rate);
+        set_dr!("cep170_loss_rate",           self.damage_rates.cep170_loss_rate);
+
         Ok(())
     }
 
@@ -810,6 +908,7 @@ mod lifecycle_tests {
             num_threads: None,
             seed: None,
             parallel_modules: false,
+            cleanup_dead_interval: None,
         };
         let mut sim = SimulationManager::new(config);
         sim.register_module(Box::new(HumanDevelopmentModule::with_params(

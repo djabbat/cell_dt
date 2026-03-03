@@ -664,6 +664,14 @@ impl Default for OrganismState {
     }
 }
 
+/// Маркер мёртвой сущности.
+///
+/// Вставляется модулями (например, `human_development_module`) при гибели клетки.
+/// `SimulationManager::cleanup_dead_entities()` периодически удаляет все сущности
+/// с этим компонентом из ECS-мира.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Dead;
+
 #[cfg(test)]
 mod tests {
     use super::*;
