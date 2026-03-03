@@ -2,6 +2,7 @@
 
 > Подробный приоритизированный список: см. **RECOMMENDATION.md**
 > Последнее обновление: 2026-03-04
+> Тесты: **45/45 ✅** | Смерть: ~78 лет ✅ | mBias@70y: 0.57 ✅
 
 ---
 
@@ -51,6 +52,12 @@
   - `methylation_level × 0.5` → `protein_aggregates`
 - 4 unit-теста: bridge_increases_hyperacetylation, bridge_increases_carbonylation, bridge_zero_with_no_ptm, bridge_scale_is_moderate
 
+### Мониторинг индукторов (`myeloid_shift_example`) ✅ NEW
+- Колонки M-ind / ΔM / D-ind / ΔD / Potency в ежегодной таблице
+- Дельта за 10-летний интервал: `=` если нет изменений, `+/-N` иначе
+- Секция `=== Inductor system ===` в финальном отчёте: remaining/inherited, fraction, division_count
+- Калибровка (seed=42): M: 10→3, D: 8→3 за 70 лет; смерть ≈78 лет ✓
+
 ### PTM-накопление (`centriole_module`) ✅
 - Накопление PTM в `CentriolePair.mother/daughter.ptm_signature`
 - Мать накапливает быстрее (daughter_ptm_factor=0.4)
@@ -96,9 +103,15 @@
 
 ## 🔧 Следующие шаги (по приоритету)
 
-1. **AsymmetricDivisionModule — спавн дочерних сущностей** — при Asymmetric → `world.spawn()` новой сущности с `CentriolarDamageState::pristine()` + ограничение `max_entities`
-2. **StemCellHierarchyModule — пластичность** — при `enable_plasticity=true` и `Oligopotent` + `spindle_fidelity > 0.6` → вероятность перехода в `Pluripotent`
-3. **Теломерный Трек C** — `TelomereState` (укорачивание при делении, ускоряется при `spindle_fidelity↓`)
+1. **Трек C: TelomereState** ← СЛЕДУЮЩИЙ
+   - `TelomereState { mean_length, shortening_per_division, is_critically_short }` в `cell_dt_core`
+   - `human_development_module`: shortening = per_division × div_rate × dt × spindle_f × ros_f
+   - `cell_cycle_module`: `is_critically_short → G1SRestriction` (Хейфликовский арест)
+   - `initialize()` спавнит TelomereState; колонка `Tel` в примере
+   - 4 unit-теста (starts_at_one, shortens, spindle_accelerates, flag)
+2. **Интеграционные тесты** — 100-летняя симуляция (normal/progeria/longevity), тест индукторов, тест mBias
+3. **Технический долг** — `stage_history.truncate(20)`, `DamageParams::normal_aging()` алиас
+4. **Трек D: EpigeneticClockState** — methylation_age, clock_acceleration = 1 + damage × 0.5
 
 ## ⬜ Долгосрочные планы
 

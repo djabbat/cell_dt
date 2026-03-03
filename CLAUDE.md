@@ -205,25 +205,24 @@ RUST_LOG=debug cargo run --bin human_development_example
 
 | Модуль | Статус | Примечание |
 |--------|--------|------------|
-| `human_development_module` | ✅ Полный | Ядро CDATA, 3 пути смерти, inflammaging-петля |
-| `myeloid_shift_module` | ✅ Полный | myeloid_bias, InflammagingState, 7 unit-тестов |
-| `cell_cycle_module` | 🟡 Частичный | Фазы работают; чекпоинты не форсируют арест |
-| `transcriptome_module` | 🟡 Частичный | Гены, TF, пути; нет обратной связи → цикл |
-| `asymmetric_division_module` | 🟡 Частичный | Классификация типа деления; нет спавна новых сущностей |
-| `stem_cell_hierarchy_module` | 🟡 Частичный | Синхронизация потентности; нет полной пластичности |
-| `centriole_module` | 🔴 Заглушка | step() не применяет damage rates к ECS |
+| `human_development_module` | ✅ Полный | Ядро CDATA, 3 пути смерти, inflammaging + PTM bridge, 9 тестов |
+| `myeloid_shift_module` | ✅ Полный | myeloid_bias, InflammagingState, 7 тестов |
+| `cell_cycle_module` | ✅ Полный | Фазы + enforced checkpoints + GeneExpressionState, 10 тестов |
+| `centriole_module` | ✅ Полный | PTM-накопление в CentriolePair, M-phase boost, 6 тестов |
+| `transcriptome_module` | 🟡 Частичный | Гены CDKN1A/CDKN2A + GeneExpressionState sync; нет обратной связи циклины→пролиферация |
+| `asymmetric_division_module` | 🟡 Частичный | Классификация деления + DivisionExhaustionState; нет спавна дочерних сущностей |
+| `stem_cell_hierarchy_module` | 🟡 Частичный | Синхронизация потентности из spindle_fidelity; нет пластичности (де-дифференцировки) |
 
 ---
 
 ## Незавершённые части
 
-1. **`centriole_module.step()`** — пустой; должен применять `damage.rs` скорости напрямую к standalone `CentriolarDamageState`
-2. **Форсирование чекпоинтов** — `cell_cycle_module` видит чекпоинты, но не останавливает клетку
-3. **Спавн дочерних сущностей** — `asymmetric_division_module` классифицирует деление, но не создаёт новые entity
-4. **Транскриптом → Клеточный цикл** — Cyclin D/E уровни из `GeneExpressionState` не влияют на длительность G1
+1. **Теломерный трек (Трек C)** — нет `TelomereState` ECS-компонента ← **СЛЕДУЮЩИЙ**
+2. **Спавн дочерних сущностей** — `asymmetric_division_module` классифицирует деление, но не создаёт новые entity
+3. **StemCellHierarchy пластичность** — де-дифференцировка при `enable_plasticity=true`
+4. **Эпигенетические часы (Трек D)** — нет `EpigeneticClockState`
 5. **Python-биндинги** — `cell_dt_python/src/lib.rs` не реализован
-6. **Теломерный трек** — нет `TelomereState` ECS-компонента
-7. **Эпигенетические часы** — нет `EpigeneticClockState`
+6. **Интеграционные тесты** — нет автоматической проверки диапазонов жизни
 
 Полный список: см. **RECOMMENDATION.md**.
 
@@ -233,15 +232,18 @@ RUST_LOG=debug cargo run --bin human_development_example
 
 ```
 Entity (стволовая ниша)
-├── CentriolePair                 ← структура центриолей, MTOC, цилии
+├── CentriolePair                 ← структура центриолей, MTOC, цилии; ptm_signature (мать/дочь)
 ├── CentriolarDamageState         ← standalone; 5 молекулярных + 4 аппендажных
 │                                   синхронизируется из HumanDevelopmentComponent каждый step()
 ├── InflammagingState             ← канал обратной связи myeloid→damage; ros_boost, niche_impairment
+├── GeneExpressionState           ← p21/p16/cyclin_d/myc; читается cell_cycle_module
+├── DivisionExhaustionState       ← exhaustion_count/asymmetric_count; читается human_dev
 ├── CellCycleStateExtended        ← фаза, прогресс, циклины/CDK, чекпоинты
 ├── HumanDevelopmentComponent     ← CDATA: стадия, возраст, damage, inducers, ткань
 ├── MyeloidShiftComponent         ← myeloid_bias, lymphoid_deficit, inflammaging_index, phenotype
 ├── StemCellHierarchyState        ← потентность (синхр. со spindle_fidelity)
-└── AsymmetricDivisionComponent   ← тип деления, niche_id, stemness_potential
+├── AsymmetricDivisionComponent   ← тип деления, niche_id, stemness_potential
+└── TelomereState                 ← mean_length [0..1], is_critically_short  ← ПЛАНИРУЕТСЯ
 ```
 
 ---

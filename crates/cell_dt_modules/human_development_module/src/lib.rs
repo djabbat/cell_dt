@@ -25,6 +25,8 @@ use cell_dt_core::{
         InflammagingState,
         DivisionExhaustionState,
         CentriolePair,
+        TelomereState,
+        EpigeneticClockState,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -41,7 +43,7 @@ pub mod development;
 
 pub use inducers::{
     HumanMorphogeneticLevel, HumanInducers,
-    centrosomal_oxygen_level, detach_by_oxygen,
+    centrosomal_oxygen_level, detach_by_oxygen, detach_by_ptm_exhaustion,
 };
 pub use tissues::*;
 pub use aging::{AgingPhenotype, CentrioleAgingLink};
@@ -157,6 +159,9 @@ pub struct HumanDevelopmentParams {
     pub mother_bias: f32,
     /// Вклад возраста (лет) в mother_bias (вспомогательный параметр)
     pub age_bias_coefficient: f32,
+    /// Масштаб PTM-опосредованного истощения материнского комплекта [0..0.01].
+    /// 0.0 → механизм выключен; 0.001 → умеренное PTM-истощение.
+    pub ptm_exhaustion_scale: f32,
 }
 
 impl Default for HumanDevelopmentParams {
@@ -169,8 +174,9 @@ impl Default for HumanDevelopmentParams {
             mother_inducer_count: 10,
             daughter_inducer_count: 8,
             base_detach_probability: 0.002,
-            mother_bias: 0.6,
-            age_bias_coefficient: 0.003,
+            mother_bias: 0.5,           // одинаковая вероятность для M и D
+            age_bias_coefficient: 0.0,  // возраст не влияет по умолчанию
+            ptm_exhaustion_scale: 0.001, // PTM-асимметрия → истощение матери
         }
     }
 }
@@ -215,6 +221,9 @@ impl HumanDevelopmentModule {
 
         if new_stage != comp.stage {
             comp.stage_history.push_back((new_stage, age));
+            if comp.stage_history.len() > 20 {
+                comp.stage_history.pop_front(); // храним только последние 20 стадий
+            }
             comp.stage = new_stage;
         }
     }
@@ -240,16 +249,26 @@ impl HumanDevelopmentModule {
         comp.tissue_state.update_functional_capacity();
     }
 
-    /// O₂-зависимое отщепление индукторов.
-    ///
-    /// Кислород проникает к центриолям тем сильнее, чем слабее
-    /// митохондриальный щит (ослабленный ROS и агрегатами).
+    /// O₂-зависимое отщепление индукторов (контролируемый путь, одинаковый для M и D).
     fn apply_oxygen_detachment(comp: &mut HumanDevelopmentComponent, rng: &mut impl Rng) {
         let oxygen = centrosomal_oxygen_level(&comp.centriolar_damage);
         let age = comp.age_years() as f32;
         if oxygen > 0.01 {
             detach_by_oxygen(&mut comp.inducers, oxygen, age, rng);
         }
+    }
+
+    /// PTM-опосредованное истощение: ТОЛЬКО мать теряет индукторы из-за PTM-асимметрии.
+    ///
+    /// Второй, независимый от O₂ путь: структурные ПТМ матери ослабляют
+    /// механическое крепление индукторов к молекулярному каркасу.
+    /// Это механизм ИСТОЩЕНИЯ стволовых клеток, а не нормальной дифференцировки.
+    fn apply_ptm_exhaustion(
+        comp: &mut HumanDevelopmentComponent,
+        ptm_asymmetry: f32,
+        rng: &mut impl Rng,
+    ) {
+        detach_by_ptm_exhaustion(&mut comp.inducers, ptm_asymmetry, rng);
     }
 
     fn update_aging_phenotypes(comp: &mut HumanDevelopmentComponent) {
@@ -321,9 +340,11 @@ impl SimulationModule for HumanDevelopmentModule {
             Option<&InflammagingState>,
             Option<&DivisionExhaustionState>,
             Option<&CentriolePair>,
+            Option<&mut TelomereState>,
+            Option<&mut EpigeneticClockState>,
         )>();
 
-        for (_, (comp, inflammaging_opt, exhaustion_opt, centriole_opt)) in query.iter() {
+        for (_, (comp, inflammaging_opt, exhaustion_opt, centriole_opt, mut telomere_opt, mut epigenetic_opt)) in query.iter() {
             if !comp.is_alive { continue; }
 
             // Предварительно извлекаем значения из InflammagingState (если модуль активен)
@@ -341,6 +362,16 @@ impl SimulationModule for HumanDevelopmentModule {
             let ptm_oxidation   = centriole_opt.map_or(0.0, |c| c.mother.ptm_signature.oxidation_level);
             let ptm_phospho     = centriole_opt.map_or(0.0, |c| c.mother.ptm_signature.phosphorylation_level);
             let ptm_methyl      = centriole_opt.map_or(0.0, |c| c.mother.ptm_signature.methylation_level);
+            // PTM-асимметрия мать−дочь: для механизма истощения стволовых клеток
+            let ptm_asymmetry = centriole_opt.map_or(0.0, |c| {
+                let m = &c.mother.ptm_signature;
+                let d = &c.daughter.ptm_signature;
+                let m_avg = (m.acetylation_level + m.oxidation_level
+                           + m.phosphorylation_level + m.methylation_level) / 4.0;
+                let d_avg = (d.acetylation_level + d.oxidation_level
+                           + d.phosphorylation_level + d.methylation_level) / 4.0;
+                (m_avg - d_avg).max(0.0)
+            });
 
             // 1. Возраст
             comp.age_days += dt_days;
@@ -392,8 +423,15 @@ impl SimulationModule for HumanDevelopmentModule {
                     comp.centriolar_damage.update_functional_metrics();
                 }
 
-                // 4. O₂-зависимое отщепление индукторов
+                // 4. O₂-зависимое отщепление индукторов (контролируемый путь, M=D=0.5)
                 Self::apply_oxygen_detachment(comp, &mut rng);
+
+                // 4б. PTM-опосредованное истощение (только мать — механизм истощения пула).
+                // Независим от O₂: структурные ПТМ матери ослабляют связи индукторов.
+                // Срабатывает только при наличии PTM-асимметрии мать > дочь.
+                if ptm_asymmetry > 0.01 {
+                    Self::apply_ptm_exhaustion(comp, ptm_asymmetry, &mut rng);
+                }
 
                 // 5. Тканевое состояние (Трек A + Трек B)
                 Self::update_tissue_state(comp);
@@ -424,6 +462,47 @@ impl SimulationModule for HumanDevelopmentModule {
                     && !comp.active_phenotypes.contains(&AgingPhenotype::ImmuneDecline)
                 {
                     comp.active_phenotypes.push(AgingPhenotype::ImmuneDecline);
+                }
+
+                // 6в. Трек C: укорачивание теломер
+                // Скорость = shortening_per_division × division_rate × spindle_factor × ros_factor
+                if let Some(ref mut tel) = telomere_opt {
+                    let div_rate: f32 = match comp.stage {
+                        HumanDevelopmentalStage::Zygote
+                        | HumanDevelopmentalStage::Cleavage     => 365.0 * 2.0,
+                        HumanDevelopmentalStage::Morula
+                        | HumanDevelopmentalStage::Blastocyst   => 365.0 * 1.0,
+                        HumanDevelopmentalStage::Implantation
+                        | HumanDevelopmentalStage::Gastrulation => 365.0 * 0.5,
+                        HumanDevelopmentalStage::Neurulation
+                        | HumanDevelopmentalStage::Organogenesis => 365.0 * 0.3,
+                        HumanDevelopmentalStage::Fetal           => 52.0,
+                        HumanDevelopmentalStage::Newborn
+                        | HumanDevelopmentalStage::Childhood     => 24.0,
+                        HumanDevelopmentalStage::Adolescence
+                        | HumanDevelopmentalStage::Adult         => 12.0,
+                        HumanDevelopmentalStage::MiddleAge       => 6.0,
+                        HumanDevelopmentalStage::Elderly         => 2.0,
+                    };
+                    let base = tel.shortening_per_division * div_rate * dt_years;
+                    let spindle_f = 1.0 + (1.0 - comp.centriolar_damage.spindle_fidelity) * 0.5;
+                    let ros_f    = 1.0 + comp.centriolar_damage.ros_level * 0.3;
+                    tel.mean_length = (tel.mean_length - base * spindle_f * ros_f).max(0.0);
+                    tel.is_critically_short = tel.mean_length < 0.3;
+                    if tel.is_critically_short
+                        && !comp.active_phenotypes.contains(&AgingPhenotype::TelomereShortening)
+                    {
+                        comp.active_phenotypes.push(AgingPhenotype::TelomereShortening);
+                    }
+                }
+
+                // 6г. Трек D: эпигенетические часы
+                // clock_acceleration = 1.0 + total_damage × 0.5
+                // methylation_age увеличивается быстрее хронологического при повреждениях
+                if let Some(ref mut epi) = epigenetic_opt {
+                    let damage = comp.centriolar_damage.total_damage_score();
+                    epi.clock_acceleration = 1.0 + damage * 0.5;
+                    epi.methylation_age += dt_years * epi.clock_acceleration;
                 }
 
                 // 7. Смерть:
@@ -472,6 +551,7 @@ impl SimulationModule for HumanDevelopmentModule {
             "base_detach_probability": self.params.base_detach_probability,
             "mother_bias":             self.params.mother_bias,
             "age_bias_coefficient":    self.params.age_bias_coefficient,
+            "ptm_exhaustion_scale":    self.params.ptm_exhaustion_scale,
             "step_count":              self.step_count,
         })
     }
@@ -514,6 +594,7 @@ impl SimulationModule for HumanDevelopmentModule {
         set_f32!("base_detach_probability", self.params.base_detach_probability);
         set_f32!("mother_bias",             self.params.mother_bias);
         set_f32!("age_bias_coefficient",    self.params.age_bias_coefficient);
+        set_f32!("ptm_exhaustion_scale",    self.params.ptm_exhaustion_scale);
         Ok(())
     }
 
@@ -548,11 +629,15 @@ impl SimulationModule for HumanDevelopmentModule {
             comp.inducers.detachment_params.mother_bias = self.params.mother_bias;
             comp.inducers.detachment_params.age_bias_coefficient =
                 self.params.age_bias_coefficient;
+            comp.inducers.detachment_params.ptm_exhaustion_scale =
+                self.params.ptm_exhaustion_scale;
             // Standalone ECS-компоненты для межмодульного взаимодействия:
             // CentriolarDamageState — синхронизируется в step() для других модулей.
             // InflammagingState     — пишется myeloid_shift_module, читается здесь.
             world.insert_one(entity, CentriolarDamageState::pristine())?;
             world.insert_one(entity, InflammagingState::default())?;
+            world.insert_one(entity, TelomereState::default())?;
+            world.insert_one(entity, EpigeneticClockState::default())?;
             world.insert_one(entity, comp)?;
         }
 

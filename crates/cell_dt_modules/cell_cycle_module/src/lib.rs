@@ -22,7 +22,7 @@ use cell_dt_core::{
     SimulationModule, SimulationResult,
     components::{
         CentriolePair, CellCycleState, CellCycleStateExtended,
-        CentriolarDamageState, GeneExpressionState, Phase, Checkpoint,
+        CentriolarDamageState, GeneExpressionState, TelomereState, Phase, Checkpoint,
     },
     hecs::World,
 };
@@ -99,6 +99,7 @@ impl CellCycleModule {
     /// | Повреждения CDATA | `G1SRestriction` | `total_damage_score > strictness` | damage снизился |
     /// | p21 (CDKN1A > 0.7) | `G1SRestriction` | стресс/ДНК-повреждение | p21 ≤ 0.7 |
     /// | p16 (CDKN2A > 0.8) | `DNARepair` | сенесценция | p16 < 0.8 (практически никогда) |
+    /// | Телометры (Хейфлика) | `G1SRestriction` | `is_critically_short` | никогда (постоянный арест) |
     /// | Веретено (spindle) | `SpindleAssembly` | `spindle < (1 - strictness)` | spindle восстановился |
     fn update_cell_cycle(
         &self,
@@ -106,6 +107,7 @@ impl CellCycleModule {
         _centriole: Option<&CentriolePair>,
         damage: Option<&CentriolarDamageState>,
         gene_expr: Option<&GeneExpressionState>,
+        telomere: Option<&TelomereState>,
         dt: f32,
     ) -> bool {
         let strictness = self.params.checkpoint_strictness;
@@ -117,6 +119,10 @@ impl CellCycleModule {
         if let Some(checkpoint) = cell_cycle.current_checkpoint {
             let can_exit = match checkpoint {
                 Checkpoint::G1SRestriction => {
+                    // Телометрный Хейфлика-арест — постоянный, выход невозможен
+                    if telomere.map_or(false, |t| t.is_critically_short) {
+                        return false;
+                    }
                     // Выход: И повреждения упали, И p21 снизился
                     let damage_ok = damage.map_or(true, |d|
                         d.total_damage_score() <= strictness || strictness == 0.0);
@@ -184,6 +190,14 @@ impl CellCycleModule {
                         return false;
                     }
                 }
+                // Предел Хейфлика: телометры критически коротки → постоянный G1/S арест
+                if let Some(tel) = telomere {
+                    if tel.is_critically_short {
+                        cell_cycle.current_checkpoint = Some(Checkpoint::G1SRestriction);
+                        debug!("Hayflick arrest: telomere critically short ({:.3})", tel.mean_length);
+                        return false;
+                    }
+                }
                 cell_cycle.progress = 0.0;
                 cell_cycle.time_in_current_phase = 0.0;
                 cell_cycle.phase = Phase::S;
@@ -233,16 +247,17 @@ impl SimulationModule for CellCycleModule {
         self.cells_arrested = 0;
         self.cells_divided  = 0;
 
-        // Читаем CentriolarDamageState и GeneExpressionState опционально —
+        // Читаем CentriolarDamageState, GeneExpressionState и TelomereState опционально —
         // работает и без CDATA-модулей, и без transcriptome_module.
         let mut query = world.query::<(
             &mut CellCycleStateExtended,
             Option<&CentriolePair>,
             Option<&CentriolarDamageState>,
             Option<&GeneExpressionState>,
+            Option<&TelomereState>,
         )>();
 
-        for (_, (cell_cycle, centriole_opt, damage_opt, gene_expr_opt)) in query.iter() {
+        for (_, (cell_cycle, centriole_opt, damage_opt, gene_expr_opt, telomere_opt)) in query.iter() {
             // Синхронизируем GrowthFactors с актуальным состоянием повреждений
             if let Some(dmg) = damage_opt {
                 cell_cycle.growth_factors.dna_damage      = dmg.total_damage_score();
@@ -252,7 +267,7 @@ impl SimulationModule for CellCycleModule {
             }
 
             let divided = self.update_cell_cycle(
-                cell_cycle, centriole_opt, damage_opt, gene_expr_opt, dt_f32);
+                cell_cycle, centriole_opt, damage_opt, gene_expr_opt, telomere_opt, dt_f32);
 
             if cell_cycle.current_checkpoint.is_some() {
                 self.cells_arrested += 1;
@@ -341,7 +356,8 @@ impl Default for CellCycleModule {
 mod tests {
     use super::*;
     use cell_dt_core::components::{
-        CellCycleStateExtended, CentriolarDamageState, GeneExpressionState, Phase, Checkpoint,
+        CellCycleStateExtended, CentriolarDamageState, GeneExpressionState, TelomereState,
+        Phase, Checkpoint,
     };
     use cell_dt_core::hecs::World;
 
@@ -568,6 +584,98 @@ mod tests {
             assert_eq!(c.current_checkpoint, Some(Checkpoint::DNARepair),
                 "senescent arrest should persist with high p16");
         }
+    }
+
+    // --- Тесты TelomereState (предел Хейфлика) ---
+
+    #[test]
+    fn test_hayflick_arrest_when_critically_short() {
+        // Телометры критически коротки → G1SRestriction при переходе G1→S
+        let mut m = module(0.0); // strictness=0 чтобы исключить damage-чекпоинт
+        let mut world = World::new();
+
+        let mut cycle = CellCycleStateExtended::new();
+        cycle.phase    = Phase::G1;
+        cycle.progress = 0.99;
+        let mut tel = TelomereState::default();
+        tel.mean_length        = 0.1; // < 0.3 → критически короткие
+        tel.is_critically_short = true;
+        world.spawn((cycle, CentriolarDamageState::pristine(), tel));
+
+        m.step(&mut world, 1.0).unwrap();
+
+        let mut q = world.query::<&CellCycleStateExtended>();
+        let (_, c) = q.iter().next().unwrap();
+        assert_eq!(c.phase, Phase::G1, "critically short telomeres should arrest in G1");
+        assert_eq!(c.current_checkpoint, Some(Checkpoint::G1SRestriction),
+            "Hayflick arrest must set G1SRestriction checkpoint");
+    }
+
+    #[test]
+    fn test_no_hayflick_arrest_before_critical() {
+        // Телометры ещё не достигли критической длины → нет ареста
+        let mut m = module(0.0);
+        let mut world = World::new();
+
+        let mut cycle = CellCycleStateExtended::new();
+        cycle.phase    = Phase::G1;
+        cycle.progress = 0.99;
+        let mut tel = TelomereState::default();
+        tel.mean_length        = 0.5; // > 0.3 → не критические
+        tel.is_critically_short = false;
+        world.spawn((cycle, CentriolarDamageState::pristine(), tel));
+
+        m.step(&mut world, 1.0).unwrap();
+
+        let mut q = world.query::<&CellCycleStateExtended>();
+        let (_, c) = q.iter().next().unwrap();
+        assert_eq!(c.phase, Phase::S, "non-critical telomeres should allow G1→S");
+        assert!(c.current_checkpoint.is_none());
+    }
+
+    #[test]
+    fn test_hayflick_arrest_is_permanent() {
+        // Предел Хейфлика — постоянный арест: повреждения нет → выйти всё равно нельзя
+        let mut m = module(0.3);
+        let mut world = World::new();
+
+        let mut cycle = CellCycleStateExtended::new();
+        cycle.phase    = Phase::G1;
+        cycle.progress = 1.0;
+        cycle.current_checkpoint = Some(Checkpoint::G1SRestriction);
+        let mut tel = TelomereState::default();
+        tel.mean_length        = 0.1;
+        tel.is_critically_short = true;
+        // Повреждений нет — без телометра вышел бы из ареста
+        world.spawn((cycle, CentriolarDamageState::pristine(), tel));
+
+        m.step(&mut world, 0.1).unwrap();
+
+        let mut q = world.query::<&CellCycleStateExtended>();
+        let (_, c) = q.iter().next().unwrap();
+        assert_eq!(c.current_checkpoint, Some(Checkpoint::G1SRestriction),
+            "Hayflick arrest must be permanent even when damage is absent");
+        assert_eq!(c.phase, Phase::G1);
+    }
+
+    #[test]
+    fn test_hayflick_no_arrest_without_telomere_component() {
+        // Если компонент TelomereState отсутствует → нет ареста (обратная совместимость)
+        let mut m = module(0.0);
+        let mut world = World::new();
+
+        let mut cycle = CellCycleStateExtended::new();
+        cycle.phase    = Phase::G1;
+        cycle.progress = 0.99;
+        // TelomereState не добавляется к сущности
+        world.spawn((cycle, CentriolarDamageState::pristine()));
+
+        m.step(&mut world, 1.0).unwrap();
+
+        let mut q = world.query::<&CellCycleStateExtended>();
+        let (_, c) = q.iter().next().unwrap();
+        assert_eq!(c.phase, Phase::S, "without TelomereState component no Hayflick arrest");
+        assert!(c.current_checkpoint.is_none());
     }
 
     #[test]

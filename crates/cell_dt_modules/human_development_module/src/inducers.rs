@@ -65,6 +65,35 @@ pub fn centrosomal_oxygen_level(damage: &CentriolarDamageState) -> f32 {
     (1.0 - mito_shield).clamp(0.0, 1.0)
 }
 
+/// PTM-опосредованное истощение материнского комплекта индукторов.
+///
+/// Второй, независимый от O₂ механизм. Структурные ПТМ (ацетилирование,
+/// карбонилирование, фосфорилирование) ослабляют связи индукторов с молекулярным
+/// каркасом центриоли. Чем сильнее PTM-асимметрия мать−дочь, тем выше вероятность
+/// потери индуктора материнским комплектом.
+///
+/// **CDATA:** это механизм ИСТОЩЕНИЯ стволовых клеток, а не нормальной
+/// дифференцировки: клетку не выбор, а молекулярный износ выталкивает из
+/// стволового состояния. Применяется ТОЛЬКО к матери.
+///
+/// Вероятность = `ptm_asymmetry × ptm_exhaustion_scale`
+/// `ptm_asymmetry` = (mother_ptm_avg − daughter_ptm_avg).max(0.0)
+pub fn detach_by_ptm_exhaustion(
+    pair: &mut CentriolarInducerPair,
+    ptm_asymmetry: f32,
+    rng: &mut impl Rng,
+) -> bool {
+    if !pair.mother_set.has_any() { return false; }
+    let scale = pair.detachment_params.ptm_exhaustion_scale;
+    if scale <= 0.0 { return false; }
+    let prob = (ptm_asymmetry * scale).clamp(0.0, 1.0);
+    if prob > 0.0 && rng.gen::<f32>() < prob {
+        pair.mother_set.detach_one();
+        return true;
+    }
+    false
+}
+
 /// Отщепить индукторы от центриолей при O₂-воздействии на центриолярную зону.
 ///
 /// # Логика отщепления:
@@ -132,6 +161,67 @@ pub fn detach_by_oxygen(
 mod tests {
     use super::*;
     use cell_dt_core::components::{CentriolarDamageState, CentriolarInducerPair, PotencyLevel};
+
+    // --- PTM-exhaustion tests ---
+
+    #[test]
+    fn test_ptm_exhaustion_zero_asymmetry_no_detach() {
+        // Нет PTM-асимметрии → мать не теряет индукторы по этому пути
+        let mut pair = CentriolarInducerPair::zygote(10, 8);
+        let initial_m = pair.mother_set.remaining;
+        let mut rng = rand::thread_rng();
+        // 1000 попыток: без асимметрии — не должно ни разу сработать при scale=0.001
+        for _ in 0..1000 {
+            detach_by_ptm_exhaustion(&mut pair, 0.0, &mut rng);
+        }
+        assert_eq!(pair.mother_set.remaining, initial_m,
+            "no asymmetry → mother should not lose inducers");
+    }
+
+    #[test]
+    fn test_ptm_exhaustion_zero_scale_disabled() {
+        // ptm_exhaustion_scale = 0 → механизм отключён
+        let mut pair = CentriolarInducerPair::zygote(10, 8);
+        pair.detachment_params.ptm_exhaustion_scale = 0.0;
+        let initial_m = pair.mother_set.remaining;
+        let mut rng = rand::thread_rng();
+        for _ in 0..1000 {
+            detach_by_ptm_exhaustion(&mut pair, 0.9, &mut rng);
+        }
+        assert_eq!(pair.mother_set.remaining, initial_m,
+            "scale=0 → mechanism disabled, mother unchanged");
+    }
+
+    #[test]
+    fn test_ptm_exhaustion_high_asymmetry_detaches_mother_only() {
+        // Высокая PTM-асимметрия → мать теряет индукторы, дочь — нет
+        let mut pair = CentriolarInducerPair::zygote(10, 8);
+        pair.detachment_params.ptm_exhaustion_scale = 1.0; // 100% вероятность
+        let initial_d = pair.daughter_set.remaining;
+        let mut rng = rand::thread_rng();
+        // При scale=1.0 и asymmetry=1.0, prob=1.0 → каждый вызов снимает один индуктор
+        detach_by_ptm_exhaustion(&mut pair, 1.0, &mut rng);
+        assert_eq!(pair.mother_set.remaining, 9,
+            "high asymmetry → mother loses 1 inductor");
+        assert_eq!(pair.daughter_set.remaining, initial_d,
+            "daughter is unaffected by ptm exhaustion path");
+    }
+
+    #[test]
+    fn test_ptm_exhaustion_daughter_unchanged_vs_oxygen() {
+        // Кислородный путь затрагивает обе центриоли; PTM-путь — только мать.
+        // Проверяем, что дочь остаётся нетронутой при PTM-истощении.
+        let mut pair = CentriolarInducerPair::zygote(10, 8);
+        pair.detachment_params.ptm_exhaustion_scale = 0.5;
+        let d_before = pair.daughter_set.remaining;
+        let mut rng = rand::thread_rng();
+        for _ in 0..500 {
+            detach_by_ptm_exhaustion(&mut pair, 0.8, &mut rng);
+        }
+        // Дочь должна быть неизменной
+        assert_eq!(pair.daughter_set.remaining, d_before,
+            "ptm exhaustion path must not touch daughter set");
+    }
 
     #[test]
     fn test_morphogenetic_level() {

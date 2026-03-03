@@ -1,4 +1,4 @@
-//! Пример CDATA-симуляции с миелоидным сдвигом.
+//! Пример CDATA-симуляции с миелоидным сдвигом и мониторингом индукторов.
 //!
 //! Демонстрирует как накопление повреждений центриоли (CDATA) постепенно
 //! сдвигает стволовые клетки от лимфоидного пути к миелоидному.
@@ -12,8 +12,9 @@
 //!
 //! ## Вывод каждые 10 лет
 //! ```
-//! Year  Stage               Damage   Spindle   Cilia   mBias  Phenotype   ROS_boost
+//! Year  Stage          Damage  Spindle   Cilia  M-ind  ΔM  D-ind  ΔD  Potency         mBias  Phenotype
 //! ```
+//! Столбцы ΔM/ΔD показывают изменение числа индукторов за 10-летний интервал.
 
 use cell_dt_core::{SimulationManager, SimulationConfig};
 use cell_dt_core::components::{CentriolePair, CellCycleStateExtended};
@@ -24,12 +25,12 @@ use human_development_module::{
     HumanDevelopmentComponent,
 };
 use myeloid_shift_module::{MyeloidShiftModule, MyeloidShiftComponent};
-use cell_dt_core::components::InflammagingState;
+use cell_dt_core::components::{InflammagingState, TelomereState};
 use std::io::Write;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Cell DT Platform — CDATA Myeloid Shift Simulation ===\n");
-    println!("Theory: Centriolar Damage → Myeloid Bias (CDATA, Tkemaladze 2007–2023)\n");
+    println!("=== Cell DT Platform — CDATA Myeloid Shift + Inductor Monitoring ===\n");
+    println!("Theory: Centriolar Damage → Inductor Loss → Myeloid Bias (CDATA, Tkemaladze)\n");
 
     let config = SimulationConfig {
         max_steps: 40_000,
@@ -67,8 +68,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         mother_inducer_count:    10,
         daughter_inducer_count:  8,
         base_detach_probability: 0.002,
-        mother_bias:             0.6,
-        age_bias_coefficient:    0.003,
+        mother_bias:             0.5,   // одинаковая вероятность M и D
+        age_bias_coefficient:    0.0,   // возраст не влияет
+        ptm_exhaustion_scale:    0.001, // PTM-асимметрия → истощение матери
     };
     sim.register_module(Box::new(HumanDevelopmentModule::with_params(dev_params)))?;
 
@@ -78,19 +80,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Создаём ниши
     initialize_niches(&mut sim, 5)?;
 
-    println!("{:<6} {:<20} {:>7} {:>8} {:>8} {:>7} {:<16} {:>8}",
+    println!("{:<6} {:<14} {:>7} {:>7} {:>7} {:>6} {:>4} {:>6} {:>4} {:<14} {:>6} {:>6} {:<14}",
         "Year", "Stage", "Damage", "Spindle", "Cilia",
-        "mBias", "Phenotype", "ROSboost");
-    println!("{}", "-".repeat(90));
+        "M-ind", "ΔM", "D-ind", "ΔD", "Potency", "mBias", "Tel", "Phenotype");
+    println!("{}", "-".repeat(118));
 
     sim.initialize()?;
+
+    // Начальные значения индукторов для расчёта дельты
+    let mut prev_m: i32 = 10;
+    let mut prev_d: i32 = 8;
 
     for year in 0usize..100 {
         for _ in 0..365 {
             sim.step()?;
         }
         if year % 10 == 0 || year == 99 {
-            print_year_status(year, &sim);
+            let (cur_m, cur_d) = print_year_status(year, &sim, prev_m, prev_d);
+            prev_m = cur_m;
+            prev_d = cur_d;
             std::io::stdout().flush()?;
         }
     }
@@ -117,25 +125,41 @@ fn initialize_niches(
     Ok(())
 }
 
-fn print_year_status(year: usize, sim: &SimulationManager) {
+/// Вывести строку таблицы за один год.
+/// Возвращает текущие значения M и D индукторов для расчёта дельты на следующем шаге.
+fn print_year_status(
+    year: usize,
+    sim: &SimulationManager,
+    prev_m: i32,
+    prev_d: i32,
+) -> (i32, i32) {
     let world = sim.world();
 
-    // Ищем первую живую нишу
-    let mut dev_query = world.query::<&HumanDevelopmentComponent>();
     let myeloid_data: Vec<_> = {
-        let mut m_query = world.query::<&MyeloidShiftComponent>();
-        m_query.iter().map(|(e, m)| (e, m.clone())).collect()
+        let mut q = world.query::<&MyeloidShiftComponent>();
+        q.iter().map(|(e, m)| (e, m.clone())).collect()
     };
     let infl_data: Vec<_> = {
-        let mut i_query = world.query::<&InflammagingState>();
-        i_query.iter().map(|(e, i)| (e, i.clone())).collect()
+        let mut q = world.query::<&InflammagingState>();
+        q.iter().map(|(e, i)| (e, i.clone())).collect()
+    };
+    let telomere_data: Vec<_> = {
+        let mut q = world.query::<&TelomereState>();
+        q.iter().map(|(e, t)| (e, t.clone())).collect()
     };
 
+    let mut dev_query = world.query::<&HumanDevelopmentComponent>();
     if let Some((entity, dev)) = dev_query.iter().find(|(_, d)| d.is_alive) {
         let stage_str = stage_name(dev.stage);
         let damage    = dev.damage_score();
         let spindle   = dev.centriolar_damage.spindle_fidelity;
         let cilia     = dev.centriolar_damage.ciliary_function;
+
+        let m_ind = dev.inducers.mother_set.remaining as i32;
+        let d_ind = dev.inducers.daughter_set.remaining as i32;
+        let delta_m = m_ind - prev_m;
+        let delta_d = d_ind - prev_d;
+        let potency_str = format!("{:?}", dev.inducers.potency_level());
 
         let myeloid_bias = myeloid_data.iter()
             .find(|(e, _)| *e == entity)
@@ -147,27 +171,41 @@ fn print_year_status(year: usize, sim: &SimulationManager) {
             .map(|(_, m)| format!("{:?}", m.phenotype))
             .unwrap_or_else(|| "N/A".to_string());
 
-        let ros_boost = infl_data.iter()
+        let _ros_boost = infl_data.iter()
             .find(|(e, _)| *e == entity)
             .map(|(_, i)| i.ros_boost)
             .unwrap_or(0.0);
 
-        println!("{:<6} {:<20} {:>7.3} {:>8.3} {:>8.3} {:>7.3} {:<16} {:>8.4}",
+        let tel_len = telomere_data.iter()
+            .find(|(e, _)| *e == entity)
+            .map(|(_, t)| t.mean_length)
+            .unwrap_or(1.0);
+
+        let dm_str = if delta_m == 0 { "=".to_string() } else { format!("{:+}", delta_m) };
+        let dd_str = if delta_d == 0 { "=".to_string() } else { format!("{:+}", delta_d) };
+
+        println!(
+            "{:<6} {:<14} {:>7.3} {:>7.3} {:>7.3} {:>6} {:>4} {:>6} {:>4} {:<14} {:>6.3} {:>6.3} {:<14}",
             year, stage_str, damage, spindle, cilia,
-            myeloid_bias, phenotype_str, ros_boost);
+            m_ind, dm_str, d_ind, dd_str,
+            potency_str, myeloid_bias, tel_len, phenotype_str,
+        );
+
+        (m_ind, d_ind)
     } else {
         println!("{:<6} [all niches exhausted]", year);
+        (prev_m, prev_d)
     }
 }
 
 fn print_final_status(sim: &SimulationManager) {
     let world = sim.world();
 
-    println!("\n{:<12} {:<14} {:>8} {:>8} {:>8} {:>7} {:<16} {:>10}",
+    println!("\n{:<12} {:<14} {:>8} {:>8} {:>8} {:>7} {:>6} {:>6} {:<14} {:<14}",
         "Tissue", "Status",
         "Age(yr)", "Damage", "Spindle",
-        "mBias", "Phenotype", "ImmuneIdx");
-    println!("{}", "-".repeat(90));
+        "mBias", "M-ind", "D-ind", "Potency", "Phenotype");
+    println!("{}", "-".repeat(105));
 
     let myeloid_map: std::collections::HashMap<_, _> = {
         let mut q = world.query::<&MyeloidShiftComponent>();
@@ -179,18 +217,24 @@ fn print_final_status(sim: &SimulationManager) {
 
     let mut dev_query = world.query::<&HumanDevelopmentComponent>();
     for (entity, dev) in dev_query.iter() {
-        let tissue  = format!("{:?}", dev.tissue_type);
-        let status  = if dev.is_alive { "alive" } else { "dead" };
-        let myeloid = myeloid_map.get(&entity);
+        let tissue   = format!("{:?}", dev.tissue_type);
+        let status   = if dev.is_alive { "alive" } else { "dead" };
+        let myeloid  = myeloid_map.get(&entity);
+        let potency  = format!("{:?}", dev.inducers.potency_level());
+        let phenotype = myeloid
+            .map(|m| format!("{:?}", m.phenotype))
+            .unwrap_or_else(|| "N/A".to_string());
 
-        println!("{:<12} {:<14} {:>8.1} {:>8.3} {:>8.3} {:>7.3} {:<16} {:>10.3}",
+        println!("{:<12} {:<14} {:>8.1} {:>8.3} {:>8.3} {:>7.3} {:>6} {:>6} {:<14} {:<14}",
             tissue, status,
             dev.age_years(),
             dev.damage_score(),
             dev.centriolar_damage.spindle_fidelity,
             myeloid.map_or(0.0, |m| m.myeloid_bias),
-            myeloid.map_or("N/A".to_string(), |m| format!("{:?}", m.phenotype)),
-            myeloid.map_or(0.0, |m| m.immune_senescence));
+            dev.inducers.mother_set.remaining,
+            dev.inducers.daughter_set.remaining,
+            potency,
+            phenotype);
 
         if dev.is_alive { alive += 1; } else { dead += 1; }
     }
@@ -200,13 +244,35 @@ fn print_final_status(sim: &SimulationManager) {
     // Детали первой живой ниши
     let mut dev_query2 = world.query::<&HumanDevelopmentComponent>();
     if let Some((entity, dev)) = dev_query2.iter().find(|(_, d)| d.is_alive) {
+        // Индукторы
+        println!("\n=== Inductor system (niche {:?}) ===", dev.tissue_type);
+        println!("  Mother set  (M): {:>3} / {:>3} inherited  (fraction: {:.3})",
+            dev.inducers.mother_set.remaining,
+            dev.inducers.mother_set.inherited_count,
+            if dev.inducers.mother_set.inherited_count > 0 {
+                dev.inducers.mother_set.remaining as f32
+                    / dev.inducers.mother_set.inherited_count as f32
+            } else { 0.0 });
+        println!("  Daughter set (D): {:>3} / {:>3} inherited  (fraction: {:.3})",
+            dev.inducers.daughter_set.remaining,
+            dev.inducers.daughter_set.inherited_count,
+            if dev.inducers.daughter_set.inherited_count > 0 {
+                dev.inducers.daughter_set.remaining as f32
+                    / dev.inducers.daughter_set.inherited_count as f32
+            } else { 0.0 });
+        println!("  Division count:   {}", dev.inducers.division_count);
+        println!("  Potency level:    {:?}", dev.inducers.potency_level());
+
+        // Миелоидный сдвиг
         if let Some(m) = myeloid_map.get(&entity) {
-            println!("\n=== Myeloid shift details (niche {:?}) ===", dev.tissue_type);
-            println!("  Myeloid bias:         {:.3}  ({:?})", m.myeloid_bias, m.phenotype);
-            println!("  Lymphoid deficit:     {:.3}", m.lymphoid_deficit);
-            println!("  Inflammaging index:   {:.3}", m.inflammaging_index);
-            println!("  Immune senescence:    {:.3}", m.immune_senescence);
+            println!("\n=== Myeloid shift (niche {:?}) ===", dev.tissue_type);
+            println!("  Myeloid bias:       {:.3}  ({:?})", m.myeloid_bias, m.phenotype);
+            println!("  Lymphoid deficit:   {:.3}", m.lymphoid_deficit);
+            println!("  Inflammaging index: {:.3}", m.inflammaging_index);
+            println!("  Immune senescence:  {:.3}", m.immune_senescence);
         }
+
+        // Центриолярные повреждения
         println!("\n=== Centriolar damage (niche {:?}) ===", dev.tissue_type);
         let d = &dev.centriolar_damage;
         println!("  Protein carbonylation:    {:.3}", d.protein_carbonylation);
@@ -218,9 +284,12 @@ fn print_final_status(sim: &SimulationManager) {
         println!("  Ciliary function (Trk A): {:.3}", d.ciliary_function);
         println!("  Spindle fidelity (Trk B): {:.3}", d.spindle_fidelity);
         println!("  Frailty index:            {:.3}", dev.frailty());
-        println!("  Active phenotypes ({}):", dev.active_phenotypes.len());
-        for ph in &dev.active_phenotypes {
-            println!("    - {:?}", ph);
+
+        if !dev.active_phenotypes.is_empty() {
+            println!("\n  Active aging phenotypes ({}):", dev.active_phenotypes.len());
+            for ph in &dev.active_phenotypes {
+                println!("    - {:?}", ph);
+            }
         }
     }
 }

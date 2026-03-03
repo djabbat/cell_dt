@@ -352,19 +352,26 @@ pub struct InducerDetachmentParams {
     /// Базовая вероятность отщепления на шаг при oxygen_level=1.0
     pub base_detach_probability: f32,
     /// Доля вероятности, приходящаяся на материнскую центриоль [0..1]
-    /// 0.5 = равновероятно; >0.5 = материнская теряет чаще (она старше)
+    /// 0.5 = равновероятно (по умолчанию); >0.5 = материнская теряет чаще
     pub mother_bias: f32,
-    /// Коэффициент влияния возраста (лет) на mother_bias
-    /// effective_bias = mother_bias + age_years × age_bias_coefficient
+    /// Коэффициент влияния возраста (лет) на mother_bias.
+    /// По умолчанию 0.0 — возраст не является причиной потери индукторов.
     pub age_bias_coefficient: f32,
+    /// Масштаб PTM-опосредованного истощения материнского комплекта.
+    ///
+    /// Второй, независимый от O₂ путь: структурные ПТМ матери ослабляют
+    /// связи индукторов. Вероятность = ptm_asymmetry × ptm_exhaustion_scale.
+    /// 0.0 → механизм выключен.
+    pub ptm_exhaustion_scale: f32,
 }
 
 impl Default for InducerDetachmentParams {
     fn default() -> Self {
         Self {
             base_detach_probability: 0.002,
-            mother_bias: 0.6,
-            age_bias_coefficient: 0.003,
+            mother_bias: 0.5,           // одинаковая вероятность для M и D
+            age_bias_coefficient: 0.0,  // возраст не влияет по умолчанию
+            ptm_exhaustion_scale: 0.001, // PTM-асимметрия → истощение матери
         }
     }
 }
@@ -773,6 +780,63 @@ impl Default for GeneExpressionState {
             p16_level:      0.0,
             cyclin_d_level: 0.5, // умеренный базальный уровень
             myc_level:      0.3,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Трек C: Теломеры
+// ---------------------------------------------------------------------------
+
+/// Состояние теломер стволовой клетки (Трек C CDATA).
+///
+/// Теломеры укорачиваются при каждом делении (лимит Хейфлика).
+/// В рамках CDATA ускорение укорачивания обусловлено:
+/// - `spindle_fidelity ↓` → хромосомная нестабильность → двойные разрывы у теломер
+/// - `ros_level ↑` → окислительное повреждение теломерной ДНК
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelomereState {
+    /// Средняя длина теломер в единицах T/S ratio [0..1]. Зигота = 1.0.
+    pub mean_length: f32,
+    /// Укорачивание за одно деление (≈50 п.н. → ~0.002 в T/S единицах).
+    pub shortening_per_division: f32,
+    /// true когда mean_length < 0.3 (Хейфликовский предел → сенесценция).
+    pub is_critically_short: bool,
+}
+
+impl Default for TelomereState {
+    fn default() -> Self {
+        Self {
+            mean_length: 1.0,
+            shortening_per_division: 0.002,
+            is_critically_short: false,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Трек D: Эпигенетические часы
+// ---------------------------------------------------------------------------
+
+/// Эпигенетические часы (Трек D CDATA) — биологический возраст по CpG-метилированию.
+///
+/// `methylation_age` догоняет хронологический возраст в молодости,
+/// обгоняет его при высоком суммарном повреждении центриоли.
+/// Ускорение часов отражает кумулятивный молекулярный стресс.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpigeneticClockState {
+    /// Биологический возраст по эпигенетическим часам (лет).
+    pub methylation_age: f32,
+    /// Коэффициент ускорения часов (1.0 = норма; >1.0 = ускорены).
+    /// `clock_acceleration = 1.0 + total_damage_score × 0.5`
+    pub clock_acceleration: f32,
+}
+
+impl Default for EpigeneticClockState {
+    fn default() -> Self {
+        Self {
+            methylation_age: 0.0,
+            clock_acceleration: 1.0,
         }
     }
 }

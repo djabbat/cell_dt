@@ -67,8 +67,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         mother_inducer_count:    10,
         daughter_inducer_count:  8,
         base_detach_probability: 0.002,
-        mother_bias:             0.6,
-        age_bias_coefficient:    0.003,
+        mother_bias:             0.5,   // одинаковая вероятность M и D
+        age_bias_coefficient:    0.0,   // возраст не влияет
+        ptm_exhaustion_scale:    0.001, // PTM-асимметрия → истощение матери
     };
     sim.register_module(Box::new(HumanDevelopmentModule::with_params(dev_params)))?;
     println!("[OK] Human development module (CDATA) registered");

@@ -66,6 +66,12 @@ impl Default for DamageParams {
 }
 
 impl DamageParams {
+    /// Стандартное нормальное старение (алиас для `Default::default()`).
+    /// Используйте вместо `DamageParams::default()` для явности в интеграционных тестах.
+    pub fn normal_aging() -> Self {
+        Self::default()
+    }
+
     /// Вариант "ускоренного старения" (прогерия) — все скорости ×5
     pub fn progeria() -> Self {
         let mut p = Self::default();
