@@ -41,6 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         symmetric_diff_probability: 0.2,
         stem_cell_niche_capacity: 5,
         max_niches: 10,
+        spindle_failure_threshold: 0.3,
     };
     let mut asymmetric_module = AsymmetricDivisionModule::with_params(asymmetric_params);
     

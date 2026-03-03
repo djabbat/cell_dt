@@ -288,87 +288,166 @@ impl DevelopmentalStage {
     }
 }
 
-/// Система индукторов дифференцировки (по CDATA)
+/// Комплект индукторов дифференцировки на одной центриоли (CDATA)
 ///
-/// S-структура: индукторы соматических клеток
-/// H-структура: индукторы гаметных клеток
-/// Каждый дифференцирующий митоз уменьшает счётчик на 1.
-/// При истощении — терминальная дифференцировка или мейоз.
+/// Материнская и дочерняя центриоли имеют **разные** комплекты (M и D).
+/// Индукторы отщепляются необратимо при проникновении O₂ к центриолям.
+/// Новая центриоль синтезируется с числом индукторов, равным ТЕКУЩЕМУ
+/// остатку родительской (не исходному максимуму зиготы).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CentriolarInducers {
-    /// Оставшихся соматических индукторов (S-структура)
-    pub s_count: u32,
-    /// Максимальный исходный запас S-индукторов
-    pub s_max: u32,
-    /// Оставшихся гаметных индукторов (H-структура)
-    pub h_count: u32,
-    /// Максимальный исходный запас H-индукторов
-    pub h_max: u32,
-    /// Суммарное число завершённых дифференцирующих делений
-    pub differentiation_divisions: u32,
+pub struct CentrioleInducerSet {
+    /// Текущий остаток индукторов
+    pub remaining: u32,
+    /// Количество, унаследованное при синтезе (не абсолютный максимум зиготы)
+    pub inherited_count: u32,
 }
 
-impl CentriolarInducers {
-    /// Зигота: полный запас индукторов (~50 делений по Хейфлику)
-    pub fn zygote(s_max: u32, h_max: u32) -> Self {
-        Self {
-            s_count: s_max,
-            s_max,
-            h_count: h_max,
-            h_max,
-            differentiation_divisions: 0,
-        }
+impl CentrioleInducerSet {
+    pub fn full(count: u32) -> Self {
+        Self { remaining: count, inherited_count: count }
     }
 
-    /// Морфогенетический статус S: 0.0 = тотипотентна, 1.0 = терминально дифференцирована
-    pub fn s_status(&self) -> f32 {
-        if self.s_max == 0 { return 1.0; }
-        1.0 - (self.s_count as f32 / self.s_max as f32)
+    pub fn empty() -> Self {
+        Self { remaining: 0, inherited_count: 0 }
     }
 
-    /// Морфогенетический статус H: 0.0 = до мейоза, 1.0 = готова к мейозу
-    pub fn h_status(&self) -> f32 {
-        if self.h_max == 0 { return 1.0; }
-        1.0 - (self.h_count as f32 / self.h_max as f32)
+    /// Дочерний комплект: наследует ТЕКУЩИЙ остаток, а не inherited_count.
+    pub fn inherit_from(&self) -> Self {
+        Self { remaining: self.remaining, inherited_count: self.remaining }
     }
 
-    /// Потребить один S-индуктор (дифференцирующее деление по соматической линии)
-    /// Возвращает true, если индуктор был доступен
-    pub fn consume_s_inducer(&mut self) -> bool {
-        if self.s_count > 0 {
-            self.s_count -= 1;
-            self.differentiation_divisions += 1;
-            true
-        } else {
-            false
-        }
+    /// Полный ли комплект относительно наследованного количества?
+    pub fn is_full(&self) -> bool {
+        self.inherited_count > 0 && self.remaining == self.inherited_count
     }
 
-    /// Потребить один H-индуктор (деление по линии половых клеток)
-    pub fn consume_h_inducer(&mut self) -> bool {
-        if self.h_count > 0 {
-            self.h_count -= 1;
-            true
-        } else {
-            false
-        }
-    }
+    pub fn has_any(&self) -> bool { self.remaining > 0 }
 
-    /// Клетка достигла терминальной дифференцировки по соматической линии
-    pub fn is_terminally_differentiated(&self) -> bool {
-        self.s_count == 0
-    }
-
-    /// Клетка готова к мейозу
-    pub fn is_ready_for_meiosis(&self) -> bool {
-        self.h_count == 0 && self.h_max > 0
+    /// Необратимо отщепить один индуктор. Возвращает true если был доступен.
+    pub fn detach_one(&mut self) -> bool {
+        if self.remaining > 0 { self.remaining -= 1; true } else { false }
     }
 }
 
-impl Default for CentriolarInducers {
+/// Уровень потентности — определяется по состоянию обоих индукторных комплектов.
+///
+/// Переход происходит через отщепление индукторов при O₂-воздействии на центриоли.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PotencyLevel {
+    /// M=полный И D=полный — оба комплекта нетронуты
+    Totipotent,
+    /// M≥1 И D≥1 — оба непусты, но не оба полные
+    Pluripotent,
+    /// Одна центриоль пуста, другая содержит ≥2 индуктора
+    Oligopotent,
+    /// Ровно 1 индуктор на одной центриоли, другая пуста
+    Unipotent,
+    /// M=0 И D=0 — запущен путь запрограммированного апоптоза
+    Apoptosis,
+}
+
+/// Параметры отщепления индукторов при O₂-воздействии (для панели управления)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InducerDetachmentParams {
+    /// Базовая вероятность отщепления на шаг при oxygen_level=1.0
+    pub base_detach_probability: f32,
+    /// Доля вероятности, приходящаяся на материнскую центриоль [0..1]
+    /// 0.5 = равновероятно; >0.5 = материнская теряет чаще (она старше)
+    pub mother_bias: f32,
+    /// Коэффициент влияния возраста (лет) на mother_bias
+    /// effective_bias = mother_bias + age_years × age_bias_coefficient
+    pub age_bias_coefficient: f32,
+}
+
+impl Default for InducerDetachmentParams {
     fn default() -> Self {
-        Self::zygote(50, 4)
+        Self {
+            base_detach_probability: 0.002,
+            mother_bias: 0.6,
+            age_bias_coefficient: 0.003,
+        }
     }
+}
+
+impl InducerDetachmentParams {
+    pub fn effective_mother_bias(&self, age_years: f32) -> f32 {
+        (self.mother_bias + age_years * self.age_bias_coefficient).min(0.95)
+    }
+    pub fn mother_prob(&self, oxygen_level: f32, age_years: f32) -> f32 {
+        oxygen_level * self.base_detach_probability * self.effective_mother_bias(age_years)
+    }
+    pub fn daughter_prob(&self, oxygen_level: f32, age_years: f32) -> f32 {
+        oxygen_level * self.base_detach_probability * (1.0 - self.effective_mother_bias(age_years))
+    }
+}
+
+/// Пара индукторных комплектов (материнская + дочерняя центриоль).
+///
+/// Заменяет устаревший `CentriolarInducers`. Асимметрия дифференцировки
+/// возникает из разного остатка комплектов M и D при O₂-отщеплении:
+/// материнская центриоль накапливает больше ПТМ → теряет индукторы чаще.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CentriolarInducerPair {
+    /// Комплект M: индукторы на материнской центриоли
+    pub mother_set: CentrioleInducerSet,
+    /// Комплект D: индукторы на дочерней центриоли (другой тип молекул)
+    pub daughter_set: CentrioleInducerSet,
+    /// Суммарное число делений данной клеточной линии
+    pub division_count: u32,
+    /// Параметры отщепления (настраиваемые через панель управления)
+    pub detachment_params: InducerDetachmentParams,
+}
+
+impl CentriolarInducerPair {
+    /// Зигота: полные комплекты на обеих центриолях.
+    pub fn zygote(mother_max: u32, daughter_max: u32) -> Self {
+        Self {
+            mother_set: CentrioleInducerSet::full(mother_max),
+            daughter_set: CentrioleInducerSet::full(daughter_max),
+            division_count: 0,
+            detachment_params: InducerDetachmentParams::default(),
+        }
+    }
+
+    /// Определить уровень потентности по текущему состоянию обоих комплектов.
+    pub fn potency_level(&self) -> PotencyLevel {
+        let m = self.mother_set.remaining;
+        let d = self.daughter_set.remaining;
+        match (m, d) {
+            (0, 0) => PotencyLevel::Apoptosis,
+            (1, 0) | (0, 1) => PotencyLevel::Unipotent,
+            (_, 0) | (0, _) => PotencyLevel::Oligopotent,
+            _ if self.mother_set.is_full() && self.daughter_set.is_full() => PotencyLevel::Totipotent,
+            _ => PotencyLevel::Pluripotent,
+        }
+    }
+
+    pub fn is_apoptotic(&self) -> bool {
+        self.potency_level() == PotencyLevel::Apoptosis
+    }
+
+    /// Создать пары для двух дочерних клеток при делении.
+    /// Новая дочерняя центриоль синтезируется с ТЕКУЩИМ остатком родительской.
+    pub fn divide(&mut self) -> (CentriolarInducerPair, CentriolarInducerPair) {
+        self.division_count += 1;
+        let cell_a = CentriolarInducerPair {
+            mother_set:  self.mother_set.clone(),
+            daughter_set: self.mother_set.inherit_from(),
+            division_count: 0,
+            detachment_params: self.detachment_params.clone(),
+        };
+        let cell_b = CentriolarInducerPair {
+            mother_set:  self.daughter_set.clone(),
+            daughter_set: self.daughter_set.inherit_from(),
+            division_count: 0,
+            detachment_params: self.detachment_params.clone(),
+        };
+        (cell_a, cell_b)
+    }
+}
+
+impl Default for CentriolarInducerPair {
+    fn default() -> Self { Self::zygote(10, 8) }
 }
 
 /// Состояние повреждений центриоли (CDATA)

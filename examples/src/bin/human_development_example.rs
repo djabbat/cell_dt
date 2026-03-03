@@ -60,10 +60,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 3. Модуль развития человека (CDATA)
     let dev_params = HumanDevelopmentParams {
-        time_acceleration:   1.0,  // 1 шаг = 1 день
-        enable_aging:        true,
-        enable_morphogenesis: true,
-        tissue_detail_level: 3,
+        time_acceleration:       1.0,   // 1 шаг = 1 день
+        enable_aging:            true,
+        enable_morphogenesis:    true,
+        tissue_detail_level:     3,
+        mother_inducer_count:    10,
+        daughter_inducer_count:  8,
+        base_detach_probability: 0.002,
+        mother_bias:             0.6,
+        age_bias_coefficient:    0.003,
     };
     sim.register_module(Box::new(HumanDevelopmentModule::with_params(dev_params)))?;
     println!("[OK] Human development module (CDATA) registered");
@@ -138,10 +143,10 @@ fn print_final_status(sim: &SimulationManager) {
     let world = sim.world();
     let mut query = world.query::<&HumanDevelopmentComponent>();
 
-    println!("\n{:<12} {:<14} {:>8} {:>8} {:>8} {:>8} {:>8} {:>6}",
+    println!("\n{:<12} {:<14} {:>8} {:>8} {:>8} {:>8} {:>8} {:>6}/{:<6} {:>14}",
         "Tissue", "Status",
-        "Age(yr)", "Damage", "Cilia", "Spindle", "Frailty", "S-ind");
-    println!("{}", "-".repeat(80));
+        "Age(yr)", "Damage", "Cilia", "Spindle", "Frailty", "M", "D", "Potency");
+    println!("{}", "-".repeat(95));
 
     let mut alive = 0u32;
     let mut dead  = 0u32;
@@ -149,14 +154,17 @@ fn print_final_status(sim: &SimulationManager) {
     for (_, comp) in query.iter() {
         let tissue = format!("{:?}", comp.tissue_type);
         let status = if comp.is_alive { "alive" } else { "dead" };
-        println!("{:<12} {:<14} {:>8.1} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>6}",
+        let potency = format!("{:?}", comp.inducers.potency_level());
+        println!("{:<12} {:<14} {:>8.1} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>6}/{:<6} {:>14}",
             tissue, status,
             comp.age_years(),
             comp.damage_score(),
             comp.centriolar_damage.ciliary_function,
             comp.centriolar_damage.spindle_fidelity,
             comp.frailty(),
-            comp.inducers.s_count);
+            comp.inducers.mother_set.remaining,
+            comp.inducers.daughter_set.remaining,
+            potency);
 
         if comp.is_alive { alive += 1; } else { dead += 1; }
     }
@@ -185,7 +193,9 @@ fn print_final_status(sim: &SimulationManager) {
         println!("  ROS level:                   {:.3}", d.ros_level);
         println!("  Ciliary function (Track A):  {:.3}", d.ciliary_function);
         println!("  Spindle fidelity (Track B):  {:.3}", d.spindle_fidelity);
-        println!("  S-inducers remaining:        {}", comp.inducers.s_count);
+        println!("  M-inducers remaining:        {}", comp.inducers.mother_set.remaining);
+        println!("  D-inducers remaining:        {}", comp.inducers.daughter_set.remaining);
+        println!("  Potency level:               {:?}", comp.inducers.potency_level());
         println!("  Stem cell pool:              {:.3}", comp.tissue_state.stem_cell_pool);
         println!("  Senescent fraction:          {:.3}", comp.tissue_state.senescent_fraction);
         println!("  Frailty index:               {:.3}", comp.frailty());
