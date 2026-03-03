@@ -50,6 +50,10 @@ CentriolarDamageState     // 5 молекулярных + 4 аппендажны
                           // (standalone ECS-компонент, синхронизируется из HumanDevelopmentComponent каждый step)
 InflammagingState         // канал обратной связи myeloid_shift_module → human_development_module
                           // поля: ros_boost, niche_impairment, sasp_intensity
+DivisionExhaustionState   // канал обратной связи asymmetric_division_module → human_development_module
+                          // поля: exhaustion_count, asymmetric_count, total_divisions, exhaustion_ratio()
+GeneExpressionState       // канал обратной связи transcriptome_module → cell_cycle_module
+                          // поля: p21_level, p16_level, cyclin_d_level, myc_level
 ```
 
 ### Цикл, ткань, организм
@@ -185,7 +189,7 @@ cargo run --bin io_example
 # Производительность
 cargo run --bin performance_test
 
-# Все тесты (37 тестов)
+# Все тесты (41 тест)
 cargo test
 
 # Документация

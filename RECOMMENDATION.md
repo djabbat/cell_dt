@@ -194,18 +194,24 @@ sasp_intensity   = inflammaging_index           → InflammagingState
   - `human_development_module.step()` читает `Option<&InflammagingState>` и применяет `ros_boost` + `niche_impairment`
   - Петля замкнута: повреждение → myeloid_shift → inflammaging → больше ROS → больше повреждений
 
-- [ ] **Транскриптом → клеточный цикл**:
-  - `transcriptome_module` обновляет уровни генов `CDKN1A (p21)`, `CDKN2A (p16)`, `MYC`
-  - `cell_cycle_module` читает эти уровни из `GeneExpressionState` и модулирует скорость прохождения фаз
-  - Конкретно: `p21_level > 0.7` → G1-арест; `p16_level > 0.8` → постоянный арест (сенесценс)
+- [x] **Транскриптом → клеточный цикл** ✅:
+  - Добавлен `GeneExpressionState` (p21, p16, cyclin_d, myc) в `cell_dt_core::components`
+  - `transcriptome_module` добавил гены CDKN1A/CDKN2A, синхронизирует уровни в `GeneExpressionState`
+  - `cell_cycle_module` читает `Option<&GeneExpressionState>`:
+    `p21 > 0.7` → `G1SRestriction`; `p16 > 0.8` → `DNARepair` (постоянный); cyclin_d → укорачивает G1
+  - 4 новых unit-теста: p21_arrests_g1s, p21_arrest_releases, p16_permanent_arrest, cyclin_d_shortens_g1
 
-- [ ] **AsymmetricDivision → TissueState**:
-  - Высокий `exhaustion_count` в `AsymmetricDivisionComponent` → снижать `tissue_state.stem_cell_pool`
-  - Сейчас эти модули не взаимодействуют — добавить чтение в `human_development_module.update_tissue_state()`
+- [x] **AsymmetricDivision → TissueState** ✅:
+  - Добавлен `DivisionExhaustionState` (exhaustion_count, asymmetric_count, total_divisions) в `cell_dt_core`
+  - `asymmetric_division_module` синхронизирует `DivisionExhaustionState` каждый шаг деления
+  - `human_development_module` читает `Option<&DivisionExhaustionState>`:
+    `exhaustion_ratio × 0.0002/шаг` → снижает `stem_cell_pool`
 
-- [ ] **MyeloidShift → AgingPhenotype**:
+- [ ] **MyeloidShift → AgingPhenotype** (частично — ImmuneDecline уже реализован через SASP):
+  <!--
   - `human_development_module.update_aging_phenotypes()` читает `MyeloidShiftComponent` (если присутствует)
   - При `immune_senescence > 0.4` → `active_phenotypes.push(AgingPhenotype::ImmuneDecline)`
+  -->
 
 ---
 

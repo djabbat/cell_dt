@@ -723,6 +723,60 @@ pub struct InflammagingState {
     pub sasp_intensity: f32,
 }
 
+/// Shared ECS-компонент статистики делений.
+///
+/// Пишется из `asymmetric_division_module` каждый шаг.
+/// Читается из `human_development_module` для коррекции `stem_cell_pool`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DivisionExhaustionState {
+    /// Число делений типа Differentiation (оба потомка дифференцируются — истощение пула).
+    pub exhaustion_count: u32,
+    /// Число асимметричных делений (нормальных).
+    pub asymmetric_count: u32,
+    /// Суммарное число завершённых делений.
+    pub total_divisions: u32,
+}
+
+impl DivisionExhaustionState {
+    /// Доля делений-истощений [0..1].
+    /// 0 — только асимметричные; 1 — только дифференцировка.
+    pub fn exhaustion_ratio(&self) -> f32 {
+        let total = self.exhaustion_count + self.asymmetric_count;
+        if total == 0 { 0.0 } else { self.exhaustion_count as f32 / total as f32 }
+    }
+}
+
+/// Shared ECS-компонент для ключевых уровней экспрессии генов.
+///
+/// Пишется из `transcriptome_module` каждый шаг.
+/// Читается из `cell_cycle_module` для p21/p16-арестов и модуляции G1.
+/// При отсутствии `transcriptome_module` компонент остаётся дефолтным — поведение как раньше.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneExpressionState {
+    /// CDKN1A (p21) — ингибитор Cdk1/2/4/6 [0..1].
+    /// p21 > 0.7 → временный G1/S арест (ДНК-повреждение, стресс).
+    pub p21_level: f32,
+    /// CDKN2A (p16/INK4a) — ингибитор Cdk4/6 [0..1].
+    /// p16 > 0.8 → постоянный арест (сенесценция).
+    pub p16_level: f32,
+    /// CCND1 (Cyclin D1) — промотор G1→S перехода [0..1].
+    /// Высокий уровень укорачивает G1.
+    pub cyclin_d_level: f32,
+    /// MYC — общий транскрипционный активатор пролиферации [0..1].
+    pub myc_level: f32,
+}
+
+impl Default for GeneExpressionState {
+    fn default() -> Self {
+        Self {
+            p21_level:      0.0,
+            p16_level:      0.0,
+            cyclin_d_level: 0.5, // умеренный базальный уровень
+            myc_level:      0.3,
+        }
+    }
+}
+
 impl CellCycleStateExtended {
     /// Получить активность конкретного комплекса
     pub fn get_complex_activity(&self, cyclin_type: CyclinType, cdk_type: CdkType) -> f32 {

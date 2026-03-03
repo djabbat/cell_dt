@@ -28,7 +28,21 @@
 - Синхронизация standalone `CentriolarDamageState` каждый step()
 - Калибровка: смерть ≈ 78 лет (normal), прогерия (×5), долгожители (×0.6)
 
-### PTM-накопление (`centriole_module`) ✅ NEW
+### Транскриптом → Клеточный цикл ✅ NEW
+- `GeneExpressionState` (p21, p16, cyclin_d, myc) добавлен в `cell_dt_core`
+- `transcriptome_module` пишет CDKN1A/CDKN2A уровни в `GeneExpressionState` каждый step()
+- `cell_cycle_module` читает `GeneExpressionState`:
+  - p21 > 0.7 → `G1SRestriction` (временный, снимается когда p21 ≤ 0.7)
+  - p16 > 0.8 → `DNARepair` (постоянный арест — сенесценция)
+  - cyclin_d → укорачивает G1 (`G1_duration / (1 + cyclin_d × 0.5)`)
+- 4 новых unit-теста
+
+### AsymmetricDivision → TissueState ✅ NEW
+- `DivisionExhaustionState` добавлен в `cell_dt_core` (shared ECS-компонент)
+- `asymmetric_division_module` пишет `exhaustion_count` и `asymmetric_count`
+- `human_development_module` читает `exhaustion_ratio` → уменьшает `stem_cell_pool`
+
+### PTM-накопление (`centriole_module`) ✅
 - Накопление PTM в `CentriolePair.mother/daughter.ptm_signature`
 - Мать накапливает быстрее (daughter_ptm_factor=0.4)
 - M-phase boost ×3.0 (тубулин максимально доступен)
@@ -73,10 +87,9 @@
 
 ## 🔧 Следующие шаги (по приоритету)
 
-1. **AsymmetricDivisionModule — спавн дочерних сущностей** — при Asymmetric → `world.spawn()` новой сущности с унаследованным `CentriolarInducerPair`
-2. **Транскриптом → Клеточный цикл** — Cyclin D уровни из `GeneExpressionState` → длительность G1 (`p21 > 0.7` → G1-арест, `p16 > 0.8` → постоянный арест)
-3. **AsymmetricDivision → TissueState** — высокий `exhaustion_count` → снижать `stem_cell_pool` в `human_development_module.update_tissue_state()`
-4. **StemCellHierarchyModule — пластичность** — при `enable_plasticity=true` и `Oligopotent` + `spindle_fidelity > 0.6` → вероятность перехода в `Pluripotent`
+1. **AsymmetricDivisionModule — спавн дочерних сущностей** — при Asymmetric → `world.spawn()` новой сущности с `CentriolarDamageState::pristine()` + ограничение `max_entities`
+2. **StemCellHierarchyModule — пластичность** — при `enable_plasticity=true` и `Oligopotent` + `spindle_fidelity > 0.6` → вероятность перехода в `Pluripotent`
+3. **PTM → CentriolarDamageState bridge** — накопленные PTM в `CentriolePair` влияют на `protein_carbonylation` / `phosphorylation_dysregulation` в `CentriolarDamageState`
 
 ## ⬜ Долгосрочные планы
 
@@ -110,7 +123,7 @@ cargo run --bin transcriptome_example
 # I/O
 cargo run --bin io_example
 
-# Все тесты (37 тестов)
+# Все тесты (41 тест)
 cargo test
 
 # Документация

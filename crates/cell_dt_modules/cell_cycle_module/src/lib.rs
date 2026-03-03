@@ -22,7 +22,7 @@ use cell_dt_core::{
     SimulationModule, SimulationResult,
     components::{
         CentriolePair, CellCycleState, CellCycleStateExtended,
-        CentriolarDamageState, Phase, Checkpoint,
+        CentriolarDamageState, GeneExpressionState, Phase, Checkpoint,
     },
     hecs::World,
 };
@@ -91,11 +91,21 @@ impl CellCycleModule {
     /// Обновить клеточный цикл за один шаг с проверкой чекпоинтов.
     ///
     /// Возвращает `true` если клетка только что завершила митоз (M → G1).
+    ///
+    /// # Источники арестов
+    ///
+    /// | Источник | Чекпоинт | Условие | Выход |
+    /// |----------|----------|---------|-------|
+    /// | Повреждения CDATA | `G1SRestriction` | `total_damage_score > strictness` | damage снизился |
+    /// | p21 (CDKN1A > 0.7) | `G1SRestriction` | стресс/ДНК-повреждение | p21 ≤ 0.7 |
+    /// | p16 (CDKN2A > 0.8) | `DNARepair` | сенесценция | p16 < 0.8 (практически никогда) |
+    /// | Веретено (spindle) | `SpindleAssembly` | `spindle < (1 - strictness)` | spindle восстановился |
     fn update_cell_cycle(
         &self,
         cell_cycle: &mut CellCycleStateExtended,
         _centriole: Option<&CentriolePair>,
         damage: Option<&CentriolarDamageState>,
+        gene_expr: Option<&GeneExpressionState>,
         dt: f32,
     ) -> bool {
         let strictness = self.params.checkpoint_strictness;
@@ -105,14 +115,24 @@ impl CellCycleModule {
 
         // --- Проверка выхода из ареста ---
         if let Some(checkpoint) = cell_cycle.current_checkpoint {
-            let can_exit = damage.map_or(true, |d| match checkpoint {
-                Checkpoint::G1SRestriction | Checkpoint::DNARepair =>
-                    d.total_damage_score() <= strictness,
-                Checkpoint::SpindleAssembly | Checkpoint::G2MCheckpoint =>
-                    d.spindle_fidelity >= (1.0 - strictness),
-            });
+            let can_exit = match checkpoint {
+                Checkpoint::G1SRestriction => {
+                    // Выход: И повреждения упали, И p21 снизился
+                    let damage_ok = damage.map_or(true, |d|
+                        d.total_damage_score() <= strictness || strictness == 0.0);
+                    let p21_ok = gene_expr.map_or(true, |g| g.p21_level <= 0.7);
+                    damage_ok && p21_ok
+                }
+                Checkpoint::DNARepair => {
+                    // p16-сенесценция — выход только если p16 упал ниже 0.8
+                    // (практически постоянный арест из-за высокой стабильности p16)
+                    gene_expr.map_or(true, |g| g.p16_level < 0.8)
+                }
+                Checkpoint::SpindleAssembly | Checkpoint::G2MCheckpoint => {
+                    damage.map_or(true, |d| d.spindle_fidelity >= (1.0 - strictness))
+                }
+            };
             if can_exit {
-                // Арест снят — прогресс ≥ 1.0, поэтому переход произойдёт ниже
                 cell_cycle.current_checkpoint = None;
             } else {
                 return false; // ещё в аресте
@@ -120,8 +140,10 @@ impl CellCycleModule {
         }
 
         // --- Нормальное продвижение прогресса ---
+        // cyclin_d ускоряет G1→S (высокий уровень CyclinD → короче G1)
+        let g1_boost = gene_expr.map(|g| g.cyclin_d_level * 0.5).unwrap_or(0.0);
         let phase_duration = match cell_cycle.phase {
-            Phase::G1 => 10.0,
+            Phase::G1 => (10.0 / (1.0 + g1_boost)).max(1.0),
             Phase::S  =>  8.0,
             Phase::G2 =>  4.0,
             Phase::M  =>  1.0,
@@ -142,10 +164,24 @@ impl CellCycleModule {
                     if let Some(dmg) = damage {
                         if dmg.total_damage_score() > strictness {
                             cell_cycle.current_checkpoint = Some(Checkpoint::G1SRestriction);
-                            debug!("G1/S checkpoint: damage={:.3} > strictness={:.3}",
+                            debug!("G1/S checkpoint (damage): {:.3} > {:.3}",
                                 dmg.total_damage_score(), strictness);
                             return false;
                         }
+                    }
+                }
+                // p21 → временный G1/S арест
+                if let Some(gx) = gene_expr {
+                    if gx.p21_level > 0.7 {
+                        cell_cycle.current_checkpoint = Some(Checkpoint::G1SRestriction);
+                        debug!("G1/S checkpoint (p21): {:.3}", gx.p21_level);
+                        return false;
+                    }
+                    // p16 → постоянный арест (сенесценция)
+                    if gx.p16_level > 0.8 {
+                        cell_cycle.current_checkpoint = Some(Checkpoint::DNARepair);
+                        debug!("Senescence checkpoint (p16): {:.3}", gx.p16_level);
+                        return false;
                     }
                 }
                 cell_cycle.progress = 0.0;
@@ -163,7 +199,7 @@ impl CellCycleModule {
                     if let Some(dmg) = damage {
                         if dmg.spindle_fidelity < (1.0 - strictness) {
                             cell_cycle.current_checkpoint = Some(Checkpoint::SpindleAssembly);
-                            debug!("G2/M checkpoint: spindle_fidelity={:.3} < {:.3}",
+                            debug!("G2/M checkpoint: spindle={:.3} < {:.3}",
                                 dmg.spindle_fidelity, 1.0 - strictness);
                             return false;
                         }
@@ -197,14 +233,16 @@ impl SimulationModule for CellCycleModule {
         self.cells_arrested = 0;
         self.cells_divided  = 0;
 
-        // Читаем CentriolarDamageState опционально — работает и без CDATA-модулей.
+        // Читаем CentriolarDamageState и GeneExpressionState опционально —
+        // работает и без CDATA-модулей, и без transcriptome_module.
         let mut query = world.query::<(
             &mut CellCycleStateExtended,
             Option<&CentriolePair>,
             Option<&CentriolarDamageState>,
+            Option<&GeneExpressionState>,
         )>();
 
-        for (_, (cell_cycle, centriole_opt, damage_opt)) in query.iter() {
+        for (_, (cell_cycle, centriole_opt, damage_opt, gene_expr_opt)) in query.iter() {
             // Синхронизируем GrowthFactors с актуальным состоянием повреждений
             if let Some(dmg) = damage_opt {
                 cell_cycle.growth_factors.dna_damage      = dmg.total_damage_score();
@@ -213,7 +251,8 @@ impl SimulationModule for CellCycleModule {
                     (dmg.total_damage_score() * self.params.stress_sensitivity).min(1.0);
             }
 
-            let divided = self.update_cell_cycle(cell_cycle, centriole_opt, damage_opt, dt_f32);
+            let divided = self.update_cell_cycle(
+                cell_cycle, centriole_opt, damage_opt, gene_expr_opt, dt_f32);
 
             if cell_cycle.current_checkpoint.is_some() {
                 self.cells_arrested += 1;
@@ -301,7 +340,9 @@ impl Default for CellCycleModule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cell_dt_core::components::{CellCycleStateExtended, CentriolarDamageState, Phase, Checkpoint};
+    use cell_dt_core::components::{
+        CellCycleStateExtended, CentriolarDamageState, GeneExpressionState, Phase, Checkpoint,
+    };
     use cell_dt_core::hecs::World;
 
     fn module(strictness: f32) -> CellCycleModule {
@@ -450,5 +491,126 @@ mod tests {
         let (_, c) = q.iter().next().unwrap();
         assert_eq!(c.cycle_count, 1);
         assert_eq!(c.phase, Phase::G1);
+    }
+
+    // --- Тесты GeneExpressionState ---
+
+    #[test]
+    fn test_p21_arrests_g1s() {
+        // p21 > 0.7 → G1SRestriction даже при pristine damage
+        let mut m = module(0.3);
+        let mut world = World::new();
+
+        let mut cycle = CellCycleStateExtended::new();
+        cycle.phase    = Phase::G1;
+        cycle.progress = 0.99;
+        let mut gene_expr = GeneExpressionState::default();
+        gene_expr.p21_level = 0.9; // высокий p21
+        world.spawn((cycle, CentriolarDamageState::pristine(), gene_expr));
+
+        m.step(&mut world, 1.0).unwrap();
+
+        let mut q = world.query::<&CellCycleStateExtended>();
+        let (_, c) = q.iter().next().unwrap();
+        assert_eq!(c.phase, Phase::G1, "p21 should arrest in G1");
+        assert_eq!(c.current_checkpoint, Some(Checkpoint::G1SRestriction));
+    }
+
+    #[test]
+    fn test_p21_arrest_releases_when_p21_drops() {
+        // Арест G1SRestriction снимается когда p21 ≤ 0.7
+        let mut m = module(0.3);
+        let mut world = World::new();
+
+        let mut cycle = CellCycleStateExtended::new();
+        cycle.phase    = Phase::G1;
+        cycle.progress = 1.0;
+        cycle.current_checkpoint = Some(Checkpoint::G1SRestriction);
+        let mut gene_expr = GeneExpressionState::default();
+        gene_expr.p21_level = 0.5; // p21 снизился → выход из ареста
+        world.spawn((cycle, CentriolarDamageState::pristine(), gene_expr));
+
+        m.step(&mut world, 0.1).unwrap();
+
+        let mut q = world.query::<&CellCycleStateExtended>();
+        let (_, c) = q.iter().next().unwrap();
+        assert!(c.current_checkpoint.is_none(), "arrest should lift when p21 drops");
+        assert_eq!(c.phase, Phase::S);
+    }
+
+    #[test]
+    fn test_p16_permanent_arrest() {
+        // p16 > 0.8 → DNARepair (сенесценция), не снимается при pristine damage
+        let mut m = module(0.3);
+        let mut world = World::new();
+
+        let mut cycle = CellCycleStateExtended::new();
+        cycle.phase    = Phase::G1;
+        cycle.progress = 0.99;
+        let mut gene_expr = GeneExpressionState::default();
+        gene_expr.p16_level = 0.95; // высокий p16
+        world.spawn((cycle, CentriolarDamageState::pristine(), gene_expr));
+
+        // Шаг 1: арест
+        m.step(&mut world, 1.0).unwrap();
+        {
+            let mut q = world.query::<&CellCycleStateExtended>();
+            let (_, c) = q.iter().next().unwrap();
+            assert_eq!(c.current_checkpoint, Some(Checkpoint::DNARepair),
+                "p16 should trigger DNARepair (senescent) checkpoint");
+        }
+
+        // Шаг 2: p16 остаётся высоким → арест не снимается
+        m.step(&mut world, 1.0).unwrap();
+        {
+            let mut q = world.query::<&CellCycleStateExtended>();
+            let (_, c) = q.iter().next().unwrap();
+            assert_eq!(c.current_checkpoint, Some(Checkpoint::DNARepair),
+                "senescent arrest should persist with high p16");
+        }
+    }
+
+    #[test]
+    fn test_cyclin_d_shortens_g1() {
+        // Высокий cyclin_d → клетка достигает G1/S границы быстрее
+        let mut m = module(0.0);
+
+        // Клетка с низким cyclin_d
+        let mut world_low = World::new();
+        let mut cycle_low = CellCycleStateExtended::new();
+        cycle_low.phase    = Phase::G1;
+        cycle_low.progress = 0.0;
+        let mut gx_low = GeneExpressionState::default();
+        gx_low.cyclin_d_level = 0.0; // нет ускорения
+        world_low.spawn((cycle_low, gx_low));
+
+        // Клетка с высоким cyclin_d
+        let mut world_high = World::new();
+        let mut cycle_high = CellCycleStateExtended::new();
+        cycle_high.phase    = Phase::G1;
+        cycle_high.progress = 0.0;
+        let mut gx_high = GeneExpressionState::default();
+        gx_high.cyclin_d_level = 1.0; // максимальное ускорение: G1 = 10/(1+0.5) ≈ 6.7
+        world_high.spawn((cycle_high, gx_high));
+
+        // Прогоняем 7 шагов (dt=1.0)
+        for _ in 0..7 {
+            m.step(&mut world_low,  1.0).unwrap();
+            m.step(&mut world_high, 1.0).unwrap();
+        }
+
+        let phase_low = {
+            let mut q = world_low.query::<&CellCycleStateExtended>();
+            q.iter().next().unwrap().1.phase
+        };
+        let phase_high = {
+            let mut q = world_high.query::<&CellCycleStateExtended>();
+            q.iter().next().unwrap().1.phase
+        };
+
+        // Через 7 шагов: низкий cyclin_d → ещё в G1 (нужно 10 шагов);
+        //                высокий cyclin_d → уже в S (нужно ~7 шагов)
+        assert_eq!(phase_low,  Phase::G1, "low cyclin_d should still be in G1 after 7 steps");
+        assert_eq!(phase_high, Phase::S,  "high cyclin_d should reach S phase in 7 steps");
     }
 }

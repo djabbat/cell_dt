@@ -11,7 +11,10 @@
 
 use cell_dt_core::{
     SimulationModule, SimulationResult,
-    components::*,
+    components::{
+        CellCycleStateExtended, CentriolarDamageState,
+        DivisionExhaustionState, Phase, PotencyLevel,
+    },
     hecs::World,
 };
 use serde::{Deserialize, Serialize};
@@ -169,18 +172,18 @@ impl SimulationModule for AsymmetricDivisionModule {
         // CentriolarInducerPair хранится в HumanDevelopmentComponent, но здесь
         // мы работаем с CentriolarDamageState (доступен через cell_dt_core),
         // используя spindle_fidelity и is_senescent как прокси.
-        for (_, (div_comp, damage, cycle)) in world.query_mut::<(
+        for (_, (div_comp, damage, cycle, exhaustion_opt)) in world.query_mut::<(
             &mut AsymmetricDivisionComponent,
             &CentriolarDamageState,
             &CellCycleStateExtended,
+            Option<&mut DivisionExhaustionState>,
         )>() {
             // Обновляем только в фазе M (деление)
             if cycle.phase != Phase::M {
                 continue;
             }
 
-            // Прокси-потентность из spindle_fidelity (пока HumanDevelopmentComponent
-            // не является отдельным ECS-компонентом с CentriolarInducerPair)
+            // Прокси-потентность из spindle_fidelity
             let proxy_potency = if damage.is_senescent {
                 PotencyLevel::Apoptosis
             } else if damage.spindle_fidelity > 0.95 {
@@ -200,13 +203,23 @@ impl SimulationModule for AsymmetricDivisionModule {
                 damage.spindle_fidelity,
                 self.params.spindle_failure_threshold,
             ) {
-                // Статистика
+                // Статистика в AsymmetricDivisionComponent
                 match div_type {
                     DivisionType::Asymmetric => div_comp.asymmetric_count += 1,
                     DivisionType::Differentiation => div_comp.exhaustion_count += 1,
                     _ => {}
                 }
                 div_comp.division_type = div_type;
+
+                // Синхронизируем shared ECS-компонент (читает human_development_module)
+                if let Some(ex) = exhaustion_opt {
+                    ex.total_divisions += 1;
+                    match div_type {
+                        DivisionType::Asymmetric   => ex.asymmetric_count  += 1,
+                        DivisionType::Differentiation => ex.exhaustion_count += 1,
+                        _ => {}
+                    }
+                }
             }
 
             // Обновить stemness_potential из spindle_fidelity
@@ -252,7 +265,10 @@ impl SimulationModule for AsymmetricDivisionModule {
         let count = entities.len();
         for &entity in &entities {
             if !world.contains(entity) { continue; }
-            world.insert_one(entity, AsymmetricDivisionComponent::default())?;
+            world.insert(entity, (
+                AsymmetricDivisionComponent::default(),
+                DivisionExhaustionState::default(),
+            ))?;
         }
 
         // Создаём стартовые ниши

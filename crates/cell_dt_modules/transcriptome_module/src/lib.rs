@@ -11,9 +11,9 @@ use cell_dt_core::{
     SimulationModule, SimulationResult,
     components::{
         CentriolePair, CellCycleStateExtended,
-        Phase,
+        Phase, GeneExpressionState,
     },
-    hecs::{World},
+    hecs::World,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -251,7 +251,30 @@ impl TranscriptomeState {
             affects_pathways: vec![],
             category: GeneCategory::Apoptosis,
         });
-        
+
+        // Ингибиторы клеточного цикла (CDK inhibitors)
+        self.add_gene(Gene {
+            name: "CDKN1A".to_string(), // p21 — временный G1/S арест (DNA damage, stress)
+            expression_level: 0.0,
+            basal_expression: 0.0,
+            max_expression: 1.0,
+            half_life: 0.2,
+            regulated_by: vec![TranscriptionFactor::P53],
+            affects_pathways: vec![],
+            category: GeneCategory::Checkpoint,
+        });
+
+        self.add_gene(Gene {
+            name: "CDKN2A".to_string(), // p16/INK4a — постоянный арест (сенесценция)
+            expression_level: 0.0,
+            basal_expression: 0.0,
+            max_expression: 1.0,
+            half_life: 0.8, // очень стабильный — накапливается годами
+            regulated_by: vec![TranscriptionFactor::NFKB],
+            affects_pathways: vec![],
+            category: GeneCategory::Checkpoint,
+        });
+
         // Гены стволовости
         self.add_gene(Gene {
             name: "NANOG".to_string(),
@@ -391,6 +414,26 @@ impl TranscriptomeState {
                 GeneCategory::Apoptosis => {
                     // Апоптозные гены активируются при стрессе
                     target += cell_cycle.growth_factors.stress_level * 0.5;
+                }
+                GeneCategory::Checkpoint => {
+                    match gene.name.as_str() {
+                        "CDKN1A" => {
+                            // p21 индуцируется p53 (ДНК-повреждение) и оксидативным стрессом
+                            let p53_activity = self.transcription_factors
+                                .get(&TranscriptionFactor::P53).copied().unwrap_or(0.0);
+                            target += p53_activity * 0.6
+                                    + cell_cycle.growth_factors.dna_damage * 0.4
+                                    + cell_cycle.growth_factors.oxidative_stress * 0.2;
+                        }
+                        "CDKN2A" => {
+                            // p16 медленно накапливается при хроническом воспалении и стрессе
+                            let nfkb = self.transcription_factors
+                                .get(&TranscriptionFactor::NFKB).copied().unwrap_or(0.0);
+                            target += nfkb * 0.3
+                                    + cell_cycle.growth_factors.stress_level * 0.15;
+                        }
+                        _ => {}
+                    }
                 }
                 _ => {}
             }
@@ -601,19 +644,32 @@ impl SimulationModule for TranscriptomeModule {
         
         // Получаем все клетки с транскриптомом, клеточным циклом и центриолями
         let mut query = world.query::<(
-            &mut TranscriptomeState, 
-            &CellCycleStateExtended, 
-            Option<&CentriolePair>
+            &mut TranscriptomeState,
+            &CellCycleStateExtended,
+            Option<&CentriolePair>,
+            Option<&mut GeneExpressionState>,
         )>();
-        
-        for (_, (transcriptome, cell_cycle, centriole_opt)) in query.iter() {
+
+        for (_, (transcriptome, cell_cycle, centriole_opt, gene_expr_opt)) in query.iter() {
             self.update_transcriptome(transcriptome, cell_cycle, centriole_opt, dt_f32);
             self.apply_mutation(transcriptome);
+
+            // Синхронизируем ключевые уровни генов в shared ECS-компонент
+            if let Some(gene_expr) = gene_expr_opt {
+                gene_expr.p21_level = transcriptome.genes.get("CDKN1A")
+                    .map(|g| g.expression_level).unwrap_or(0.0);
+                gene_expr.p16_level = transcriptome.genes.get("CDKN2A")
+                    .map(|g| g.expression_level).unwrap_or(0.0);
+                gene_expr.cyclin_d_level = transcriptome.genes.get("CCND1")
+                    .map(|g| g.expression_level).unwrap_or(0.5);
+                gene_expr.myc_level = transcriptome.transcription_factors
+                    .get(&TranscriptionFactor::MYC).copied().unwrap_or(0.3);
+            }
         }
-        
+
         // Сохраняем историю экспрессии для анализа
         if self.step_count.is_multiple_of(100) {
-            if let Some((_, (transcriptome, _, _))) = query.iter().next() {
+            if let Some((_, (transcriptome, _, _, _))) = query.iter().next() {
                 self.expression_history.push(transcriptome.get_expression_profile());
                 
                 // Ограничиваем историю
@@ -673,14 +729,15 @@ impl SimulationModule for TranscriptomeModule {
         
         let entity_count = entities.len();
         
-        // Для каждой сущности добавляем транскриптом
+        // Для каждой сущности добавляем транскриптом и GeneExpressionState
         for &entity in &entities {
             if !world.contains(entity) {
                 continue;
             }
-            
-            let transcriptome = TranscriptomeState::new();
-            world.insert_one(entity, transcriptome)?;
+            world.insert(entity, (
+                TranscriptomeState::new(),
+                GeneExpressionState::default(),
+            ))?;
         }
         
         info!("Initialized transcriptome for {} cells", entity_count);

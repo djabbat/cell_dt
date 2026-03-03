@@ -23,6 +23,7 @@ use cell_dt_core::{
         TissueState, TissueType,
         CellCycleStateExtended,
         InflammagingState,
+        DivisionExhaustionState,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -314,16 +315,21 @@ impl SimulationModule for HumanDevelopmentModule {
         // Шаг 1: обновить HumanDevelopmentComponent (основная логика CDATA)
         // Также читаем InflammagingState (опционально) — пишется myeloid_shift_module.
         {
-        let mut query = world
-            .query::<(&mut HumanDevelopmentComponent, Option<&InflammagingState>)>();
+        let mut query = world.query::<(
+            &mut HumanDevelopmentComponent,
+            Option<&InflammagingState>,
+            Option<&DivisionExhaustionState>,
+        )>();
 
-        for (_, (comp, inflammaging_opt)) in query.iter() {
+        for (_, (comp, inflammaging_opt, exhaustion_opt)) in query.iter() {
             if !comp.is_alive { continue; }
 
             // Предварительно извлекаем значения из InflammagingState (если модуль активен)
             let infl_ros_boost        = inflammaging_opt.map_or(0.0, |i| i.ros_boost);
             let infl_niche_impairment = inflammaging_opt.map_or(0.0, |i| i.niche_impairment);
             let infl_sasp             = inflammaging_opt.map_or(0.0, |i| i.sasp_intensity);
+            // Истощение делений (asymmetric_division_module → stem_cell_pool)
+            let exhaustion_ratio      = exhaustion_opt.map_or(0.0, |e| e.exhaustion_ratio());
 
             // 1. Возраст
             comp.age_days += dt_days;
@@ -366,6 +372,16 @@ impl SimulationModule for HumanDevelopmentModule {
                     comp.tissue_state.regeneration_tempo =
                         (comp.tissue_state.regeneration_tempo
                             * (1.0 - infl_niche_impairment)).max(0.0);
+                    comp.tissue_state.update_functional_capacity();
+                }
+
+                // 5в. Истощение пула из-за симметричных дифф. делений
+                // exhaustion_ratio → уменьшает stem_cell_pool на 0.0002/шаг × ratio
+                // Скорость 0.0002 мала: заметный эффект накапливается за годы активного деления
+                if exhaustion_ratio > 0.0 {
+                    const POOL_DEPLETION_RATE: f32 = 0.0002;
+                    comp.tissue_state.stem_cell_pool = (comp.tissue_state.stem_cell_pool
+                        - exhaustion_ratio * POOL_DEPLETION_RATE * dt_years as f32).max(0.0);
                     comp.tissue_state.update_functional_capacity();
                 }
 
