@@ -72,6 +72,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         mother_bias:             0.5,   // одинаковая вероятность M и D
         age_bias_coefficient:    0.0,   // возраст не влияет
         ptm_exhaustion_scale:    0.001, // PTM-асимметрия → истощение матери
+        de_novo_centriole_division:   4,    // 16-клеточная стадия (Морула)
+        meiotic_elimination_enabled: true,
     };
     sim.register_module(Box::new(HumanDevelopmentModule::with_params(dev_params)))?;
 

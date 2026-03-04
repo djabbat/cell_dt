@@ -478,10 +478,19 @@ sasp_intensity   = inflammaging_index           → InflammagingState
 ✅ 21 GUI CDATA-вкладка (Tab::Cdata, CdataGuiConfig, DamagePreset, сессия 6) → п. 7
 ✅ 22 Тест калибровки индукторов (2 теста, multiseed, сессия 6)           → п. 6
 ✅ 23 Тесты миелоидного сдвига по возрастам (4 теста, сессия 6)           → п. 6
+✅ 24 DifferentiationStatus + ModulationState (сессия 7)                  → п. 3
+      DifferentiationTier (Ord), try_advance (необратимо), ModulationState
+      5 тестов: tier_ordering, from_potency, irreversibility, same_tier, modulation_default
+✅ 25 De novo создание центриолей + мейотическая элиминация (сессия 7)    → п. 3
+      de_novo_centriole_division (u32, дефолт 4), meiotic_elimination_enabled (bool, дефолт true)
+      HumanDevelopmentalStage: PartialOrd/Ord; inductors_active/meiotic_reset_done в DifferentiationStatus
+      GUI: новая секция "🧬 Жизненный цикл индукторов" (slider 1-8, checkbox)
+      4 теста: inductors_inactive_by_default, reset_for_meiosis, de_novo_stage_mapping, stage_ordering
    20 митохондриальный модуль                                              → долгосрочно
 ```
 
 ---
 
 *При каждом выполненном пункте: переместить в секцию "ВЫПОЛНЕНО" вверху, обновить дату.*
-*Последнее обновление: 2026-03-04 (сессия 5) — 62 теста ✅*
+*Последнее обновление: 2026-03-04 (сессия 7) — 77 тестов ✅*
+*Изменить  RECOMMENDATION.md, TODO.md и README.md соответственно изменениям*

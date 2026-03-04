@@ -20,7 +20,7 @@ use cell_dt_core::{
     hecs::{World, Entity},
     components::{
         CentriolarDamageState, CentriolarInducerPair, PotencyLevel,
-        TissueState,
+        TissueState, DifferentiationStatus, DifferentiationTier, ModulationState,
         CellCycleStateExtended,
         InflammagingState,
         DivisionExhaustionState,
@@ -56,7 +56,7 @@ pub use development::{division_rate_per_year, base_ros_level, stage_for_age};
 // Этапы развития (15 стадий — от зиготы до старческого возраста)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum HumanDevelopmentalStage {
     Zygote,
     Cleavage,
@@ -163,6 +163,16 @@ pub struct HumanDevelopmentParams {
     /// Масштаб PTM-опосредованного истощения материнского комплекта [0..0.01].
     /// 0.0 → механизм выключен; 0.001 → умеренное PTM-истощение.
     pub ptm_exhaustion_scale: f32,
+
+    // --- Жизненный цикл индукторов ---
+    /// Номер деления бластомеров (от зиготы), при котором создаются de novo центриоли
+    /// с индукторами дифференцировки. [1..=8]. По умолчанию: 4 (16-клеточная стадия, Морула).
+    /// До достижения этой стадии `DifferentiationStatus.inductors_active = false`.
+    pub de_novo_centriole_division: u32,
+    /// Включить учёт элиминации центриолей в прелептотенной стадии мейоза.
+    /// При `true`: в стадии Adolescence регистрируется мейотическая элиминация
+    /// (для следующего поколения DifferentiationStatus начнётся с нуля).
+    pub meiotic_elimination_enabled: bool,
 }
 
 impl Default for HumanDevelopmentParams {
@@ -178,6 +188,8 @@ impl Default for HumanDevelopmentParams {
             mother_bias: 0.5,           // одинаковая вероятность для M и D
             age_bias_coefficient: 0.0,  // возраст не влияет по умолчанию
             ptm_exhaustion_scale: 0.001, // PTM-асимметрия → истощение матери
+            de_novo_centriole_division: 4,    // 16-клеточная стадия (Морула)
+            meiotic_elimination_enabled: true, // биологически корректный дефолт
         }
     }
 }
@@ -269,6 +281,27 @@ impl HumanDevelopmentModule {
         comp.tissue_state.senescent_fraction =
             (dam.total_damage_score() * 0.85).min(1.0);
         // update_functional_capacity() вызывается ОДИН РАЗ в конце всех тканевых обновлений
+    }
+
+    /// Стадия, соответствующая n-му делению бластомеров (de novo создание центриолей).
+    ///
+    /// | Деление | Кол-во клеток | Стадия       |
+    /// |---------|--------------|--------------|
+    /// | 1       | 2            | Cleavage     |
+    /// | 2       | 4            | Cleavage     |
+    /// | 3       | 8            | Cleavage     |
+    /// | 4       | 16           | Morula (дефолт) |
+    /// | 5       | 32           | Blastocyst   |
+    /// | 6       | 64           | Blastocyst   |
+    /// | 7+      | 128+         | Implantation |
+    pub(crate) fn de_novo_stage_for_division(division: u32) -> HumanDevelopmentalStage {
+        match division {
+            1       => HumanDevelopmentalStage::Zygote,
+            2 | 3   => HumanDevelopmentalStage::Cleavage,
+            4       => HumanDevelopmentalStage::Morula,
+            5 | 6   => HumanDevelopmentalStage::Blastocyst,
+            _       => HumanDevelopmentalStage::Implantation,
+        }
     }
 
     /// O₂-зависимое отщепление индукторов (контролируемый путь, одинаковый для M и D).
@@ -385,9 +418,11 @@ impl SimulationModule for HumanDevelopmentModule {
             Option<&CentriolePair>,
             Option<&mut TelomereState>,
             Option<&mut EpigeneticClockState>,
+            Option<&mut DifferentiationStatus>,
+            Option<&mut ModulationState>,
         )>();
 
-        for (_, (comp, inflammaging_opt, exhaustion_opt, centriole_opt, mut telomere_opt, mut epigenetic_opt)) in query.iter() {
+        for (_, (comp, inflammaging_opt, exhaustion_opt, centriole_opt, mut telomere_opt, mut epigenetic_opt, mut diff_status_opt, mut modulation_opt)) in query.iter() {
             if !comp.is_alive { continue; }
 
             // Предварительно извлекаем значения из InflammagingState (если модуль активен)
@@ -588,6 +623,97 @@ impl SimulationModule for HumanDevelopmentModule {
                     }
                 }
 
+                // 6д. Необратимый статус дифференцировки (DifferentiationStatus)
+                // Логика жизненного цикла индукторов:
+                //   1. Индукторы создаются de novo при n-м делении бластомеров (Морула по умолчанию)
+                //   2. До этой стадии клетка не может коммитироваться (inductors_active = false)
+                //   3. При включённой мейотической элиминации — регистрируется событие для следующего поколения
+                if let Some(ref mut diff_status) = diff_status_opt {
+                    // Активировать индукторы при достижении стадии de novo
+                    if !diff_status.inductors_active {
+                        let de_novo_stage =
+                            Self::de_novo_stage_for_division(self.params.de_novo_centriole_division);
+                        if comp.stage >= de_novo_stage {
+                            diff_status.inductors_active = true;
+                            info!(
+                                "De novo centriole creation at {:?} (division {}): \
+                                 inductors activated at age {:.3} days ({:?})",
+                                comp.stage,
+                                self.params.de_novo_centriole_division,
+                                comp.age_days,
+                                comp.tissue_type,
+                            );
+                        }
+                    }
+
+                    // Коммитирование только при активных индукторах
+                    if diff_status.inductors_active {
+                        let current_potency = comp.inducers.potency_level();
+                        if diff_status.try_advance(current_potency, comp.age_years()) {
+                            info!(
+                                "Commitment event: {:?} at age {:.1} yr ({:?})",
+                                diff_status.tier,
+                                comp.age_years(),
+                                comp.tissue_type,
+                            );
+                        }
+                    }
+
+                    // Мейотическая элиминация центриолей: при достижении репродуктивного возраста
+                    // регистрируем событие (реальный сброс происходит при инициализации следующего поколения).
+                    if self.params.meiotic_elimination_enabled
+                        && !diff_status.meiotic_reset_done
+                        && comp.stage == HumanDevelopmentalStage::Adolescence
+                    {
+                        diff_status.meiotic_reset_done = true;
+                        info!(
+                            "Meiotic centriole elimination registered at {:?}, age {:.1} yr ({:?}): \
+                             next-generation DifferentiationStatus will start from Totipotent",
+                            comp.stage,
+                            comp.age_years(),
+                            comp.tissue_type,
+                        );
+                    }
+                }
+
+                // 6е. Обратимая модуляция (ModulationState)
+                // Зависит от внешних сигналов: ниша, стресс, SASP.
+                // НЕ меняет DifferentiationStatus — только адаптирует активность.
+                if let Some(ref mut modulation) = modulation_opt {
+                    // Активность = функция от состояния ниши и нишевых сигналов
+                    modulation.niche_signal_strength = comp.tissue_state.regeneration_tempo;
+                    modulation.activity_level = (
+                        comp.tissue_state.functional_capacity * 0.7
+                        + modulation.niche_signal_strength * 0.3
+                    ).clamp(0.0, 1.0);
+                    modulation.is_quiescent = modulation.activity_level < 0.2;
+
+                    // Стресс-ответ: ROS + агрегаты → шаперонная система
+                    modulation.stress_response = (
+                        comp.centriolar_damage.ros_level * 0.5
+                        + comp.centriolar_damage.protein_aggregates * 0.3
+                    ).clamp(0.0, 1.0);
+
+                    // SASP: сенесцентная клетка секретирует воспалительные факторы в нишу
+                    if comp.centriolar_damage.is_senescent {
+                        modulation.sasp_output = infl_sasp.max(
+                            comp.centriolar_damage.ros_level * 0.3
+                        );
+                    } else {
+                        // Экспоненциальный спад SASP при восстановлении
+                        modulation.sasp_output = (modulation.sasp_output * 0.95).max(0.0);
+                    }
+
+                    // Эпигенетическая пластичность снижается по мере дифференцировки
+                    modulation.epigenetic_plasticity = match comp.inducers.potency_level() {
+                        PotencyLevel::Totipotent  => 1.0,
+                        PotencyLevel::Pluripotent => 0.8,
+                        PotencyLevel::Oligopotent => 0.5,
+                        PotencyLevel::Unipotent   => 0.2,
+                        PotencyLevel::Apoptosis   => 0.0,
+                    };
+                }
+
                 // 7. Смерть:
                 //    — молекулярный сенесценс (total_damage > 0.75 ≈ 78 лет)
                 //    — апоптоз через исчерпание обоих комплектов (M=0, D=0)
@@ -652,6 +778,9 @@ impl SimulationModule for HumanDevelopmentModule {
             "mother_bias":             self.params.mother_bias,
             "age_bias_coefficient":    self.params.age_bias_coefficient,
             "ptm_exhaustion_scale":    self.params.ptm_exhaustion_scale,
+            // Жизненный цикл индукторов
+            "de_novo_centriole_division":   self.params.de_novo_centriole_division,
+            "meiotic_elimination_enabled":  self.params.meiotic_elimination_enabled,
             // Параметры накопления повреждений (DamageParams)
             "base_ros_damage_rate":         self.damage_rates.base_ros_damage_rate,
             "acetylation_rate":             self.damage_rates.acetylation_rate,
@@ -709,6 +838,8 @@ impl SimulationModule for HumanDevelopmentModule {
         set_f32!("mother_bias",             self.params.mother_bias);
         set_f32!("age_bias_coefficient",    self.params.age_bias_coefficient);
         set_f32!("ptm_exhaustion_scale",    self.params.ptm_exhaustion_scale);
+        set_u32!("de_novo_centriole_division",  self.params.de_novo_centriole_division);
+        set_bool!("meiotic_elimination_enabled", self.params.meiotic_elimination_enabled);
 
         // DamageParams: preset (заменяет все значения сразу)
         if let Some(preset) = params.get("damage_preset").and_then(|v| v.as_str()) {
@@ -785,6 +916,8 @@ impl SimulationModule for HumanDevelopmentModule {
             world.insert_one(entity, InflammagingState::default())?;
             world.insert_one(entity, TelomereState::default())?;
             world.insert_one(entity, EpigeneticClockState::default())?;
+            world.insert_one(entity, DifferentiationStatus::default())?;
+            world.insert_one(entity, ModulationState::default())?;
             world.insert_one(entity, comp)?;
         }
 
@@ -1199,5 +1332,130 @@ mod myeloid_range_tests {
         assert!(bias_70 > bias_20,
             "myeloid_bias должен расти с возрастом: age20={:.3}, age70={:.3}",
             bias_20, bias_70);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Тесты DifferentiationStatus и ModulationState
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod differentiation_tests {
+    use cell_dt_core::components::{
+        DifferentiationStatus, DifferentiationTier, ModulationState, PotencyLevel,
+    };
+
+    /// DifferentiationTier: Ord работает корректно (Totipotent < Terminal)
+    #[test]
+    fn test_tier_ordering() {
+        assert!(DifferentiationTier::Totipotent  < DifferentiationTier::Pluripotent);
+        assert!(DifferentiationTier::Pluripotent < DifferentiationTier::Multipotent);
+        assert!(DifferentiationTier::Multipotent < DifferentiationTier::Committed);
+        assert!(DifferentiationTier::Committed   < DifferentiationTier::Terminal);
+    }
+
+    /// from_potency правильно отображает PotencyLevel → DifferentiationTier
+    #[test]
+    fn test_from_potency_mapping() {
+        assert_eq!(DifferentiationTier::from_potency(PotencyLevel::Totipotent),  DifferentiationTier::Totipotent);
+        assert_eq!(DifferentiationTier::from_potency(PotencyLevel::Pluripotent), DifferentiationTier::Pluripotent);
+        assert_eq!(DifferentiationTier::from_potency(PotencyLevel::Oligopotent), DifferentiationTier::Multipotent);
+        assert_eq!(DifferentiationTier::from_potency(PotencyLevel::Unipotent),   DifferentiationTier::Committed);
+        assert_eq!(DifferentiationTier::from_potency(PotencyLevel::Apoptosis),   DifferentiationTier::Terminal);
+    }
+
+    /// Необратимость: try_advance идёт только вперёд, никогда назад
+    #[test]
+    fn test_differentiation_is_irreversible() {
+        let mut status = DifferentiationStatus::new(PotencyLevel::Totipotent);
+        assert_eq!(status.tier, DifferentiationTier::Totipotent);
+        assert_eq!(status.commitment_events, 0);
+
+        // Переход вперёд: Totipotent → Pluripotent
+        let advanced = status.try_advance(PotencyLevel::Pluripotent, 5.0);
+        assert!(advanced, "переход Totipotent → Pluripotent должен вернуть true");
+        assert_eq!(status.tier, DifferentiationTier::Pluripotent);
+        assert_eq!(status.commitment_events, 1);
+        assert_eq!(status.tier_history.len(), 1);
+
+        // Попытка регресса: Pluripotent → Totipotent (должна быть проигнорирована)
+        let regressed = status.try_advance(PotencyLevel::Totipotent, 6.0);
+        assert!(!regressed, "попытка регресса должна вернуть false");
+        assert_eq!(status.tier, DifferentiationTier::Pluripotent, "tier не должен регрессировать");
+        assert_eq!(status.commitment_events, 1, "commitment_events не должен расти при регрессе");
+
+        // Переход вперёд: Pluripotent → Terminal (через Apoptosis)
+        let advanced2 = status.try_advance(PotencyLevel::Apoptosis, 78.0);
+        assert!(advanced2);
+        assert_eq!(status.tier, DifferentiationTier::Terminal);
+        assert_eq!(status.commitment_events, 2);
+    }
+
+    /// Попытка advance при том же уровне: не должна создавать событие
+    #[test]
+    fn test_no_event_same_tier() {
+        let mut status = DifferentiationStatus::new(PotencyLevel::Pluripotent);
+        let advanced = status.try_advance(PotencyLevel::Pluripotent, 10.0);
+        assert!(!advanced, "один и тот же уровень не должен создавать commitment event");
+        assert_eq!(status.commitment_events, 0);
+    }
+
+    /// ModulationState default: активна, не в покое
+    #[test]
+    fn test_modulation_default_active() {
+        let m = ModulationState::default();
+        assert_eq!(m.activity_level, 1.0);
+        assert!(!m.is_quiescent);
+        assert_eq!(m.sasp_output, 0.0);
+        assert_eq!(m.epigenetic_plasticity, 1.0);
+    }
+
+    /// De novo: inductors_active по умолчанию false
+    #[test]
+    fn test_inductors_inactive_by_default() {
+        let status = DifferentiationStatus::default();
+        assert!(!status.inductors_active, "inductors должны быть неактивны до de novo стадии");
+        assert!(!status.meiotic_reset_done, "мейотическая элиминация ещё не произошла");
+    }
+
+    /// reset_for_meiosis: сбрасывает tier → Totipotent и деактивирует индукторы
+    #[test]
+    fn test_reset_for_meiosis() {
+        let mut status = DifferentiationStatus::default();
+        // Активируем и продвигаем
+        status.inductors_active = true;
+        status.try_advance(PotencyLevel::Oligopotent, 20.0);
+        assert_eq!(status.tier, DifferentiationTier::Multipotent);
+        assert_eq!(status.commitment_events, 1);
+
+        // Мейотический сброс
+        status.reset_for_meiosis();
+        assert_eq!(status.tier, DifferentiationTier::Totipotent, "tier должен сброситься до Totipotent");
+        assert!(!status.inductors_active, "inductors_active должен стать false после мейоза");
+        assert_eq!(status.commitment_events, 0, "commitment_events обнуляется");
+        // История сохраняется
+        assert_eq!(status.tier_history.len(), 1, "история переходов сохраняется");
+    }
+
+    /// de_novo_stage_for_division: корректное отображение
+    #[test]
+    fn test_de_novo_stage_mapping() {
+        use super::HumanDevelopmentalStage;
+        use super::HumanDevelopmentModule;
+        assert_eq!(HumanDevelopmentModule::de_novo_stage_for_division(1), HumanDevelopmentalStage::Zygote);
+        assert_eq!(HumanDevelopmentModule::de_novo_stage_for_division(2), HumanDevelopmentalStage::Cleavage);
+        assert_eq!(HumanDevelopmentModule::de_novo_stage_for_division(3), HumanDevelopmentalStage::Cleavage);
+        assert_eq!(HumanDevelopmentModule::de_novo_stage_for_division(4), HumanDevelopmentalStage::Morula);
+        assert_eq!(HumanDevelopmentModule::de_novo_stage_for_division(5), HumanDevelopmentalStage::Blastocyst);
+        assert_eq!(HumanDevelopmentModule::de_novo_stage_for_division(8), HumanDevelopmentalStage::Implantation);
+    }
+
+    /// HumanDevelopmentalStage: Ord работает в правильном направлении
+    #[test]
+    fn test_stage_ordering() {
+        use super::HumanDevelopmentalStage;
+        assert!(HumanDevelopmentalStage::Zygote    < HumanDevelopmentalStage::Cleavage);
+        assert!(HumanDevelopmentalStage::Cleavage  < HumanDevelopmentalStage::Morula);
+        assert!(HumanDevelopmentalStage::Morula    < HumanDevelopmentalStage::Blastocyst);
+        assert!(HumanDevelopmentalStage::Adult     < HumanDevelopmentalStage::Elderly);
     }
 }

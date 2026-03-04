@@ -490,6 +490,11 @@ pub struct CdataGuiConfig {
     pub base_detach_probability: f32,
     pub mother_bias: f32,
     pub age_bias_coefficient: f32,
+    // --- Жизненный цикл индукторов ---
+    /// Номер деления бластомеров для de novo создания центриолей [1..=8]
+    pub de_novo_centriole_division: u32,
+    /// Учитывать элиминацию центриолей в прелептотенной стадии мейоза
+    pub meiotic_elimination_enabled: bool,
     // --- Миелоидный сдвиг ---
     pub spindle_weight: f32,
     pub cilia_weight: f32,
@@ -523,6 +528,8 @@ impl Default for CdataGuiConfig {
             base_detach_probability: 0.002,
             mother_bias: 0.6,
             age_bias_coefficient: 0.003,
+            de_novo_centriole_division: 4,
+            meiotic_elimination_enabled: true,
             spindle_weight: 0.45,
             cilia_weight: 0.30,
             ros_weight: 0.15,
@@ -1248,6 +1255,55 @@ impl ConfigApp {
                     self.state.push_history();
                 }
             });
+        });
+
+        ui.add_space(4.0);
+
+        // --- Inductor lifecycle ---
+        ui.collapsing("🧬 Жизненный цикл индукторов", |ui| {
+            ui.label("Параметры управляют созданием de novo и элиминацией индукторов в мейозе.");
+
+            ui.horizontal(|ui| {
+                ui.label("de_novo_centriole_division:")
+                  .on_hover_text(
+                    "На каком делении бластомеров (от зиготы) создаются de novo центриоли \
+                     с индукторами дифференцировки.\n\
+                     4 = 16-клеточная стадия (Морула, биологический дефолт человека).\n\
+                     До этой стадии DifferentiationStatus.inductors_active = false."
+                  );
+                let mut div = self.state.cdata.de_novo_centriole_division as f32;
+                if ui.add(
+                    Slider::new(&mut div, 1.0..=8.0)
+                        .step_by(1.0)
+                        .suffix(" деление")
+                ).changed() {
+                    self.state.cdata.de_novo_centriole_division = div as u32;
+                    self.state.push_history();
+                }
+            });
+
+            let stage_label = match self.state.cdata.de_novo_centriole_division {
+                1     => "Zygote",
+                2 | 3 => "Cleavage",
+                4     => "Morula ✓",
+                5 | 6 => "Blastocyst",
+                _     => "Implantation",
+            };
+            ui.label(format!("→ стадия: {}", stage_label));
+
+            ui.add_space(4.0);
+
+            if ui.checkbox(
+                &mut self.state.cdata.meiotic_elimination_enabled,
+                "meiotic_elimination_enabled",
+            ).on_hover_text(
+                "Учитывать элиминацию центриолей в прелептотенной стадии мейоза.\n\
+                 При включении: в стадии Adolescence регистрируется мейотическая элиминация —\n\
+                 следующее поколение начнёт с DifferentiationStatus.Totipotent.\n\
+                 Биологически корректный дефолт: включено."
+            ).changed() {
+                self.state.push_history();
+            }
         });
 
         ui.add_space(4.0);

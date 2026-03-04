@@ -918,3 +918,143 @@ impl CellCycleStateExtended {
         // Будет реализовано позже
     }
 }
+
+// ---------------------------------------------------------------------------
+// Необратимая дифференцировка и обратимая модуляция (CDATA)
+// ---------------------------------------------------------------------------
+
+/// Необратимый уровень дифференцировки клетки.
+///
+/// Определяется отщеплением индукторов дифференцировки от центриолей.
+/// Каждый переход запускается **внутренним** фактором — потерей индуктора —
+/// а не внешними сигналами. После фиксации уровень не может регрессировать.
+///
+/// Соответствует [`PotencyLevel`] молекулярному состоянию:
+/// `Totipotent → Pluripotent → Multipotent → Committed → Terminal`
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum DifferentiationTier {
+    /// Зигота: все индукторы интактны, оба комплекта полны.
+    Totipotent,
+    /// Плюрипотент: оба комплекта имеют оставшиеся индукторы, но уже потеряли часть.
+    Pluripotent,
+    /// Мультипотент (олигопотент): один комплект исчерпан.
+    Multipotent,
+    /// Коммитированная: последние индукторы почти исчерпаны (унипотент).
+    Committed,
+    /// Терминально дифференцированная: оба комплекта пусты, деления невозможны.
+    Terminal,
+}
+
+impl DifferentiationTier {
+    /// Производить `DifferentiationTier` из текущего потентностного состояния.
+    pub fn from_potency(potency: PotencyLevel) -> Self {
+        match potency {
+            PotencyLevel::Totipotent  => DifferentiationTier::Totipotent,
+            PotencyLevel::Pluripotent => DifferentiationTier::Pluripotent,
+            PotencyLevel::Oligopotent => DifferentiationTier::Multipotent,
+            PotencyLevel::Unipotent   => DifferentiationTier::Committed,
+            PotencyLevel::Apoptosis   => DifferentiationTier::Terminal,
+        }
+    }
+}
+
+/// ECS-компонент необратимого статуса дифференцировки (CDATA).
+///
+/// Устанавливается однажды при первом отщеплении индуктора и может продвигаться
+/// **только вперёд** по лестнице дифференцировки.
+/// Отражает биологическую концепцию CDATA: при каждом отщеплении индуктора
+/// он внедряется в ядерную ДНК → включаются генные сети нового статуса,
+/// выключаются предыдущие. Этот процесс необратим.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DifferentiationStatus {
+    /// Текущий необратимый уровень (только вперёд).
+    pub tier: DifferentiationTier,
+    /// История переходов: `(новый_уровень, возраст_в_годах)`.
+    pub tier_history: Vec<(DifferentiationTier, f64)>,
+    /// Количество необратимых переходов (событий коммитирования).
+    pub commitment_events: u32,
+    /// Активны ли индукторы дифференцировки (создаются de novo при n-м делении).
+    /// `false` до достижения стадии de novo — клетка не может коммитироваться.
+    pub inductors_active: bool,
+    /// Произошла ли элиминация центриолей в прелептотенной стадии мейоза.
+    /// `true` — элиминация зарегистрирована (для текущего поколения).
+    pub meiotic_reset_done: bool,
+}
+
+impl DifferentiationStatus {
+    pub fn new(initial_potency: PotencyLevel) -> Self {
+        Self {
+            tier: DifferentiationTier::from_potency(initial_potency),
+            tier_history: Vec::new(),
+            commitment_events: 0,
+            inductors_active: false,
+            meiotic_reset_done: false,
+        }
+    }
+
+    /// Продвинуть tier вперёд, если `new_potency` даёт более высокий уровень дифференцировки.
+    /// Возвращает `true` если произошёл переход (commitment event).
+    /// Никогда не позволяет регрессировать.
+    pub fn try_advance(&mut self, new_potency: PotencyLevel, age_years: f64) -> bool {
+        let new_tier = DifferentiationTier::from_potency(new_potency);
+        if new_tier > self.tier {
+            self.tier_history.push((new_tier, age_years));
+            self.tier = new_tier;
+            self.commitment_events += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Сброс статуса дифференцировки при элиминации центриолей в прелептотенной стадии мейоза.
+    /// Индукторы элиминируются → следующее поколение начнёт с Totipotent.
+    /// История сохраняется для аудита; счётчик коммитирований сбрасывается.
+    pub fn reset_for_meiosis(&mut self) {
+        self.tier = DifferentiationTier::Totipotent;
+        self.commitment_events = 0;
+        self.inductors_active = false;
+    }
+}
+
+impl Default for DifferentiationStatus {
+    fn default() -> Self { Self::new(PotencyLevel::Totipotent) }
+}
+
+/// ECS-компонент обратимой модуляции клетки (CDATA).
+///
+/// Изменяется под влиянием **внешних** сигналов: нишевых факторов, паракрина,
+/// воспаления (InflammagingState), ростовых факторов.
+/// Не меняет [`DifferentiationStatus`] — только адаптирует поведение клетки
+/// в рамках уже зафиксированного статуса дифференцировки.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModulationState {
+    /// Уровень активности [0..1]: 0 = покой (G0), 1 = максимальная активность.
+    pub activity_level: f32,
+    /// Обратимый покой (G0-квесценция): `true` при `activity_level < 0.2`.
+    pub is_quiescent: bool,
+    /// Сила нишевых сигналов, получаемых клеткой [0..1].
+    pub niche_signal_strength: f32,
+    /// Ответ на острый стресс [0..1]: шаперонный стресс-ответ (HSP70, HSP90).
+    pub stress_response: f32,
+    /// SASP-вклад этой клетки в окружающую нишу [0..1].
+    /// Ненулевой только у сенесцентных клеток.
+    pub sasp_output: f32,
+    /// Эпигенетическая пластичность [0..1]: насколько клетка может модулировать
+    /// экспрессию в рамках текущего дифференцировочного статуса.
+    /// Снижается по мере прохождения уровней дифференцировки.
+    pub epigenetic_plasticity: f32,
+}
+
+impl Default for ModulationState {
+    fn default() -> Self {
+        Self {
+            activity_level: 1.0,
+            is_quiescent: false,
+            niche_signal_strength: 1.0,
+            stress_response: 0.0,
+            sasp_output: 0.0,
+            epigenetic_plasticity: 1.0,
+        }
+    }
+}
