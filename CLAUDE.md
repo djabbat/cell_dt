@@ -261,10 +261,11 @@ Entity (стволовая ниша)
 ```rust
 sim.register_module(Box::new(CentrioleModule::...));          // 1
 sim.register_module(Box::new(CellCycleModule::...));          // 2
-sim.register_module(Box::new(HumanDevelopmentModule::...));   // 3 — синхр. CentriolarDamageState
-sim.register_module(Box::new(MyeloidShiftModule::...));       // 4 — читает CDA, пишет InflammagingState
-sim.register_module(Box::new(StemCellHierarchyModule::...));  // 5 — читает CDA
-sim.register_module(Box::new(AsymmetricDivisionModule::...)); // 6 — читает CDA
+sim.register_module(Box::new(MitochondrialModule::...));      // 3 — lazy-init MitochondrialState
+sim.register_module(Box::new(HumanDevelopmentModule::...));   // 4 — синхр. CDA, читает MitochondrialState
+sim.register_module(Box::new(MyeloidShiftModule::...));       // 5 — читает CDA, пишет InflammagingState
+sim.register_module(Box::new(StemCellHierarchyModule::...));  // 6 — читает CDA
+sim.register_module(Box::new(AsymmetricDivisionModule::...)); // 7 — читает CDA
 ```
 
 `HumanDevelopmentModule` должен быть перед `MyeloidShiftModule`, так как он синхронизирует

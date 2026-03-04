@@ -1010,10 +1010,12 @@ impl DifferentiationStatus {
     /// Сброс статуса дифференцировки при элиминации центриолей в прелептотенной стадии мейоза.
     /// Индукторы элиминируются → следующее поколение начнёт с Totipotent.
     /// История сохраняется для аудита; счётчик коммитирований сбрасывается.
+    /// `meiotic_reset_done` сбрасывается в `false` — следующее поколение может снова пройти мейоз.
     pub fn reset_for_meiosis(&mut self) {
         self.tier = DifferentiationTier::Totipotent;
         self.commitment_events = 0;
         self.inductors_active = false;
+        self.meiotic_reset_done = false; // сброс флага — новое поколение может снова пройти этот этап
     }
 }
 

@@ -306,8 +306,18 @@ impl HumanDevelopmentModule {
     }
 
     /// O₂-зависимое отщепление индукторов (контролируемый путь, одинаковый для M и D).
-    fn apply_oxygen_detachment(comp: &mut HumanDevelopmentComponent, rng: &mut impl Rng) {
-        let oxygen = centrosomal_oxygen_level(&comp.centriolar_damage);
+    ///
+    /// `shield_factor` — вклад митохондриального щита (1.0 = щит цел, 0.0 = щит разрушен).
+    /// Чем ниже shield_factor, тем больше O₂ достигает центросомы (множитель до ×2.0).
+    fn apply_oxygen_detachment(
+        comp: &mut HumanDevelopmentComponent,
+        shield_factor: f32,
+        rng: &mut impl Rng,
+    ) {
+        let raw_oxygen = centrosomal_oxygen_level(&comp.centriolar_damage);
+        // При ослаблении митохондриального щита O₂ проникает активнее.
+        // shield_factor=1.0 → нет изменений; shield_factor=0.0 → удвоение O₂.
+        let oxygen = (raw_oxygen * (2.0 - shield_factor)).min(1.0);
         let age = comp.age_years() as f32;
         if oxygen > 0.01 {
             detach_by_oxygen(&mut comp.inducers, oxygen, age, rng);
@@ -525,8 +535,7 @@ impl SimulationModule for HumanDevelopmentModule {
                 // mito_ros_boost → accumulate_damage() → ros_level ↑ → centrosomal_oxygen_level ↑
                 // → больше O₂ у центросомы → больше отщеплений (лаг 1 шаг — корректно).
                 // Прямое масштабирование здесь не применяется.
-                let _ = mito_shield; // используется через ROS-буст (выше)
-                Self::apply_oxygen_detachment(comp, &mut self.rng);
+                Self::apply_oxygen_detachment(comp, mito_shield, &mut self.rng);
 
                 // 4б. PTM-опосредованное истощение (только мать — механизм истощения пула).
                 // Независим от O₂: структурные ПТМ матери ослабляют связи индукторов.
@@ -1442,10 +1451,12 @@ mod differentiation_tests {
         assert_eq!(status.commitment_events, 1);
 
         // Мейотический сброс
+        status.meiotic_reset_done = true; // имитируем: мейоз уже произошёл однажды
         status.reset_for_meiosis();
         assert_eq!(status.tier, DifferentiationTier::Totipotent, "tier должен сброситься до Totipotent");
         assert!(!status.inductors_active, "inductors_active должен стать false после мейоза");
         assert_eq!(status.commitment_events, 0, "commitment_events обнуляется");
+        assert!(!status.meiotic_reset_done, "meiotic_reset_done должен сброситься для следующего поколения");
         // История сохраняется
         assert_eq!(status.tier_history.len(), 1, "история переходов сохраняется");
     }

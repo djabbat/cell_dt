@@ -292,7 +292,8 @@ mod tests {
             .map(|(_, s)| s.mtdna_mutations)
             .collect();
         assert!(!state.is_empty());
-        assert!(state[0] > 0.05, "за 30 лет мутации должны накопиться: {}", state[0]);
+        // base_rate=0.003/yr × 30yr + ROS-feedback → ожидаем ≥ 0.07
+        assert!(state[0] > 0.07, "за 30 лет мутации должны накопиться: {}", state[0]);
     }
 
     /// ROS растёт вместе с мутациями
@@ -308,8 +309,9 @@ mod tests {
             .iter()
             .map(|(_, s)| (s.ros_production, s.mtdna_mutations))
             .unzip();
-        assert!(ros[0] > 0.0, "ROS должен быть > 0 при наличии мутаций");
-        assert!(mutations[0] > 0.0);
+        // После 50 лет: mutations ~0.15+ → ros_production = mutations*0.6 > 0.04
+        assert!(ros[0] > 0.04, "ROS должен значимо вырасти за 50 лет: {}", ros[0]);
+        assert!(mutations[0] > 0.10, "мутации за 50 лет: {}", mutations[0]);
     }
 
     /// mito_shield_contribution ∈ [0, 1]
@@ -362,7 +364,8 @@ mod tests {
             module.step(&mut world, 365.25).unwrap();
         }
         for (_, s) in world.query::<&MitochondrialState>().iter() {
-            assert!(s.fusion_index < 1.0, "за 60 лет fusion_index должен снизиться: {}", s.fusion_index);
+            // fission_rate=0.05 × ros_production × 60yr → снижение на ~0.15+
+            assert!(s.fusion_index < 0.90, "за 60 лет fusion_index должен заметно снизиться: {}", s.fusion_index);
         }
     }
 }

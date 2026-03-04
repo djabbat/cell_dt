@@ -12,8 +12,8 @@
 use cell_dt_core::{
     SimulationModule, SimulationResult,
     components::{
-        CellCycleStateExtended, CentriolarDamageState,
-        DivisionExhaustionState, Phase, PotencyLevel,
+        CellCycleStateExtended, CentriolarDamageState, CentriolePair,
+        DivisionExhaustionState, MitochondrialState, Phase, PotencyLevel,
         InflammagingState,
     },
     hecs::World,
@@ -268,6 +268,8 @@ impl SimulationModule for AsymmetricDivisionModule {
             for daughter_damage in spawn_queue.into_iter().take(to_spawn) {
                 let _ = world.spawn((
                     CellCycleStateExtended::new(),       // требуется другими модулями
+                    CentriolePair::default(),             // для centriole_module
+                    MitochondrialState::default(),        // для mitochondrial_module
                     daughter_damage,                      // слегка повреждённая → pristine
                     AsymmetricDivisionComponent::default(),
                     DivisionExhaustionState::default(),

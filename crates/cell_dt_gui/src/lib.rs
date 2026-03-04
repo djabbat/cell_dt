@@ -38,19 +38,13 @@ pub struct ConfigAppState {
     pub message: Option<String>,
     pub validation_errors: Vec<String>,
     
-    // History (simplified version without self-references)
-    pub history_states: VecDeque<ConfigAppState>,
-    pub history_index: usize,
-    pub max_history: usize,
-    
     // Real-time visualization
     pub realtime_viz: RealtimeVisualization,
 }
 
 impl Default for ConfigAppState {
     fn default() -> Self {
-        let mut states = VecDeque::new();
-        let default_state = Self {
+        Self {
             config_file: "config.toml".to_string(),
             config_format: "toml".to_string(),
             simulation: SimulationConfig::default(),
@@ -70,67 +64,11 @@ impl Default for ConfigAppState {
             show_validation_dialog: false,
             message: None,
             validation_errors: Vec::new(),
-            history_states: VecDeque::new(),
-            history_index: 0,
-            max_history: 50,
             realtime_viz: RealtimeVisualization::default(),
-        };
-        states.push_back(default_state.clone());
-        
-        Self {
-            history_states: states,
-            history_index: 0,
-            max_history: 50,
-            ..default_state
         }
     }
 }
 
-impl ConfigAppState {
-    pub fn push_history(&mut self) {
-        // Remove states ahead of current index
-        while self.history_states.len() > self.history_index + 1 {
-            self.history_states.pop_back();
-        }
-        
-        // Add current state to history
-        self.history_states.push_back(self.clone());
-        
-        // Limit history size
-        while self.history_states.len() > self.max_history {
-            self.history_states.pop_front();
-            self.history_index = self.history_index.saturating_sub(1);
-        }
-        
-        self.history_index = self.history_states.len() - 1;
-    }
-    
-    pub fn undo(&mut self) -> Option<ConfigAppState> {
-        if self.history_index > 0 {
-            self.history_index -= 1;
-            Some(self.history_states[self.history_index].clone())
-        } else {
-            None
-        }
-    }
-    
-    pub fn redo(&mut self) -> Option<ConfigAppState> {
-        if self.history_index + 1 < self.history_states.len() {
-            self.history_index += 1;
-            Some(self.history_states[self.history_index].clone())
-        } else {
-            None
-        }
-    }
-    
-    pub fn can_undo(&self) -> bool {
-        self.history_index > 0
-    }
-    
-    pub fn can_redo(&self) -> bool {
-        self.history_index + 1 < self.history_states.len()
-    }
-}
 
 // ==================== REAL-TIME VISUALIZATION ====================
 
@@ -649,12 +587,57 @@ impl Default for VisualizationConfig {
 
 pub struct ConfigApp {
     state: ConfigAppState,
+    history_states: VecDeque<ConfigAppState>,
+    history_index: usize,
+    max_history: usize,
 }
 
 impl ConfigApp {
     pub fn new() -> Self {
+        let state = ConfigAppState::default();
+        let mut history_states = VecDeque::new();
+        history_states.push_back(state.clone());
         Self {
-            state: ConfigAppState::default(),
+            state,
+            history_states,
+            history_index: 0,
+            max_history: 50,
+        }
+    }
+
+    fn push_history(&mut self) {
+        // Remove states ahead of current index
+        while self.history_states.len() > self.history_index + 1 {
+            self.history_states.pop_back();
+        }
+        // Flat clone — ConfigAppState no longer has history inside it
+        self.history_states.push_back(self.state.clone());
+        while self.history_states.len() > self.max_history {
+            self.history_states.pop_front();
+            self.history_index = self.history_index.saturating_sub(1);
+        }
+        self.history_index = self.history_states.len() - 1;
+    }
+
+    fn can_undo(&self) -> bool {
+        self.history_index > 0
+    }
+
+    fn can_redo(&self) -> bool {
+        self.history_index + 1 < self.history_states.len()
+    }
+
+    fn undo(&mut self) {
+        if self.history_index > 0 {
+            self.history_index -= 1;
+            self.state = self.history_states[self.history_index].clone();
+        }
+    }
+
+    fn redo(&mut self) {
+        if self.history_index + 1 < self.history_states.len() {
+            self.history_index += 1;
+            self.state = self.history_states[self.history_index].clone();
         }
     }
 }
@@ -674,19 +657,15 @@ impl eframe::App for ConfigApp {
                 ui.separator();
                 
                 // History buttons
-                ui.add_enabled_ui(self.state.can_undo(), |ui| {
+                ui.add_enabled_ui(self.can_undo(), |ui| {
                     if ui.button("↩️ Undo").clicked() {
-                        if let Some(prev_state) = self.state.undo() {
-                            self.state = prev_state;
-                        }
+                        self.undo();
                     }
                 });
-                
-                ui.add_enabled_ui(self.state.can_redo(), |ui| {
+
+                ui.add_enabled_ui(self.can_redo(), |ui| {
                     if ui.button("↪️ Redo").clicked() {
-                        if let Some(next_state) = self.state.redo() {
-                            self.state = next_state;
-                        }
+                        self.redo();
                     }
                 });
                 
@@ -747,7 +726,7 @@ impl eframe::App for ConfigApp {
                 
                 for tab in tabs {
                     if ui.selectable_value(&mut self.state.selected_tab, tab, tab.name()).clicked() {
-                        self.state.push_history();
+                        self.push_history();
                     }
                 }
             });
@@ -831,6 +810,11 @@ impl eframe::App for ConfigApp {
         if self.state.show_validation_dialog {
             self.show_validation_dialog(ctx);
         }
+
+        // Limit repaint rate to reduce CPU usage when realtime_viz is enabled
+        if self.state.realtime_viz.enabled {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
     }
 }
 
@@ -844,21 +828,21 @@ impl ConfigApp {
         ui.horizontal(|ui| {
             ui.label("Number of steps:");
             if ui.add(Slider::new(&mut self.state.simulation.max_steps, 1..=1_000_000)).changed() {
-                self.state.push_history();
+                self.push_history();
             }
         });
         
         ui.horizontal(|ui| {
             ui.label("Time step (dt):");
             if ui.add(Slider::new(&mut self.state.simulation.dt, 0.001..=1.0).logarithmic(true)).changed() {
-                self.state.push_history();
+                self.push_history();
             }
         });
         
         ui.horizontal(|ui| {
             ui.label("Checkpoint interval:");
             if ui.add(Slider::new(&mut self.state.simulation.checkpoint_interval, 1..=10_000)).changed() {
-                self.state.push_history();
+                self.push_history();
             }
         });
         
@@ -867,7 +851,7 @@ impl ConfigApp {
             let mut threads = self.state.simulation.num_threads.unwrap_or(1);
             if ui.add(Slider::new(&mut threads, 1..=64)).changed() {
                 self.state.simulation.num_threads = Some(threads);
-                self.state.push_history();
+                self.push_history();
             }
         });
         
@@ -876,7 +860,7 @@ impl ConfigApp {
             let mut seed = self.state.simulation.seed.unwrap_or(42);
             if ui.add(Slider::new(&mut seed, 0..=999_999)).changed() {
                 self.state.simulation.seed = Some(seed);
-                self.state.push_history();
+                self.push_history();
             }
         });
         
@@ -888,12 +872,12 @@ impl ConfigApp {
                 && output != output_str
             {
                 self.state.simulation.output_dir = PathBuf::from(output);
-                self.state.push_history();
+                self.push_history();
             }
         });
         
         if ui.checkbox(&mut self.state.simulation.parallel_modules, "Parallel module execution").changed() {
-            self.state.push_history();
+            self.push_history();
         }
     }
     
@@ -902,26 +886,26 @@ impl ConfigApp {
         ui.separator();
         
         if ui.checkbox(&mut self.state.centriole.enabled, "Enable module").changed() {
-            self.state.push_history();
+            self.push_history();
         }
         
         if self.state.centriole.enabled {
             ui.horizontal(|ui| {
                 ui.label("Acetylation rate:");
                 if ui.add(Slider::new(&mut self.state.centriole.acetylation_rate, 0.0..=0.1)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
             
             ui.horizontal(|ui| {
                 ui.label("Oxidation rate:");
                 if ui.add(Slider::new(&mut self.state.centriole.oxidation_rate, 0.0..=0.1)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
             
             if ui.checkbox(&mut self.state.centriole.parallel_cells, "Parallel cell processing").changed() {
-                self.state.push_history();
+                self.push_history();
             }
         }
     }
@@ -931,46 +915,46 @@ impl ConfigApp {
         ui.separator();
         
         if ui.checkbox(&mut self.state.cell_cycle.enabled, "Enable module").changed() {
-            self.state.push_history();
+            self.push_history();
         }
         
         if self.state.cell_cycle.enabled {
             ui.horizontal(|ui| {
                 ui.label("Base cycle duration:");
                 if ui.add(Slider::new(&mut self.state.cell_cycle.base_cycle_time, 1.0..=100.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
             
             ui.horizontal(|ui| {
                 ui.label("Checkpoint strictness:");
                 if ui.add(Slider::new(&mut self.state.cell_cycle.checkpoint_strictness, 0.0..=1.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
             
             if ui.checkbox(&mut self.state.cell_cycle.enable_apoptosis, "Enable apoptosis").changed() {
-                self.state.push_history();
+                self.push_history();
             }
             
             ui.horizontal(|ui| {
                 ui.label("Nutrient availability:");
                 if ui.add(Slider::new(&mut self.state.cell_cycle.nutrient_availability, 0.0..=1.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
             
             ui.horizontal(|ui| {
                 ui.label("Growth factor level:");
                 if ui.add(Slider::new(&mut self.state.cell_cycle.growth_factor_level, 0.0..=1.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
             
             ui.horizontal(|ui| {
                 ui.label("Random variation:");
                 if ui.add(Slider::new(&mut self.state.cell_cycle.random_variation, 0.0..=1.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
         }
@@ -981,21 +965,21 @@ impl ConfigApp {
         ui.separator();
         
         if ui.checkbox(&mut self.state.transcriptome.enabled, "Enable module").changed() {
-            self.state.push_history();
+            self.push_history();
         }
         
         if self.state.transcriptome.enabled {
             ui.horizontal(|ui| {
                 ui.label("Mutation rate:");
                 if ui.add(Slider::new(&mut self.state.transcriptome.mutation_rate, 0.0..=0.01).logarithmic(true)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
             
             ui.horizontal(|ui| {
                 ui.label("Noise level:");
                 if ui.add(Slider::new(&mut self.state.transcriptome.noise_level, 0.0..=0.5)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
         }
@@ -1006,51 +990,51 @@ impl ConfigApp {
         ui.separator();
         
         if ui.checkbox(&mut self.state.asymmetric.enabled, "Enable module").changed() {
-            self.state.push_history();
+            self.push_history();
         }
         
         if self.state.asymmetric.enabled {
             ui.horizontal(|ui| {
                 ui.label("Asymmetric division probability:");
                 if ui.add(Slider::new(&mut self.state.asymmetric.asymmetric_probability, 0.0..=1.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
             
             ui.horizontal(|ui| {
                 ui.label("Self-renewal probability:");
                 if ui.add(Slider::new(&mut self.state.asymmetric.renewal_probability, 0.0..=1.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
             
             ui.horizontal(|ui| {
                 ui.label("Differentiation probability:");
                 if ui.add(Slider::new(&mut self.state.asymmetric.diff_probability, 0.0..=1.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
             
             ui.horizontal(|ui| {
                 ui.label("Niche capacity:");
                 if ui.add(Slider::new(&mut self.state.asymmetric.niche_capacity, 1..=100)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
             
             ui.horizontal(|ui| {
                 ui.label("Maximum niches:");
                 if ui.add(Slider::new(&mut self.state.asymmetric.max_niches, 1..=1000)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
             
             if ui.checkbox(&mut self.state.asymmetric.enable_polarity, "Enable polarity").changed() {
-                self.state.push_history();
+                self.push_history();
             }
             
             if ui.checkbox(&mut self.state.asymmetric.enable_fate_determinants, "Enable fate determinants").changed() {
-                self.state.push_history();
+                self.push_history();
             }
         }
     }
@@ -1060,7 +1044,7 @@ impl ConfigApp {
         ui.separator();
         
         if ui.checkbox(&mut self.state.stem_hierarchy.enabled, "Enable module").changed() {
-            self.state.push_history();
+            self.push_history();
         }
         
         if self.state.stem_hierarchy.enabled {
@@ -1078,24 +1062,24 @@ impl ConfigApp {
                         ui.selectable_value(&mut self.state.stem_hierarchy.initial_potency, 
                             "Differentiated".to_string(), "Differentiated");
                     });
-                self.state.push_history();
+                self.push_history();
             });
             
             if ui.checkbox(&mut self.state.stem_hierarchy.enable_plasticity, "Enable plasticity").changed() {
-                self.state.push_history();
+                self.push_history();
             }
             
             ui.horizontal(|ui| {
                 ui.label("Plasticity rate:");
                 if ui.add(Slider::new(&mut self.state.stem_hierarchy.plasticity_rate, 0.0..=0.1).logarithmic(true)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
             
             ui.horizontal(|ui| {
                 ui.label("Differentiation threshold:");
                 if ui.add(Slider::new(&mut self.state.stem_hierarchy.differentiation_threshold, 0.0..=1.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
         }
@@ -1106,14 +1090,14 @@ impl ConfigApp {
         ui.separator();
         
         if ui.checkbox(&mut self.state.io.enabled, "Enable module").changed() {
-            self.state.push_history();
+            self.push_history();
         }
         
         if self.state.io.enabled {
             ui.horizontal(|ui| {
                 ui.label("Output directory:");
                 if ui.text_edit_singleline(&mut self.state.io.output_dir).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
             
@@ -1126,7 +1110,7 @@ impl ConfigApp {
                         ui.selectable_value(&mut self.state.io.format, "parquet".to_string(), "Parquet");
                         ui.selectable_value(&mut self.state.io.format, "hdf5".to_string(), "HDF5");
                     });
-                self.state.push_history();
+                self.push_history();
             });
             
             ui.horizontal(|ui| {
@@ -1138,32 +1122,32 @@ impl ConfigApp {
                         ui.selectable_value(&mut self.state.io.compression, "snappy".to_string(), "Snappy");
                         ui.selectable_value(&mut self.state.io.compression, "gzip".to_string(), "Gzip");
                     });
-                self.state.push_history();
+                self.push_history();
             });
             
             ui.horizontal(|ui| {
                 ui.label("Buffer size:");
                 if ui.add(Slider::new(&mut self.state.io.buffer_size, 100..=10000)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
             
             if ui.checkbox(&mut self.state.io.save_checkpoints, "Save checkpoints").changed() {
-                self.state.push_history();
+                self.push_history();
             }
             
             if self.state.io.save_checkpoints {
                 ui.horizontal(|ui| {
                     ui.label("Checkpoint interval:");
                     if ui.add(Slider::new(&mut self.state.io.checkpoint_interval, 10..=1000)).changed() {
-                        self.state.push_history();
+                        self.push_history();
                     }
                 });
                 
                 ui.horizontal(|ui| {
                     ui.label("Maximum checkpoints:");
                     if ui.add(Slider::new(&mut self.state.io.max_checkpoints, 1..=100)).changed() {
-                        self.state.push_history();
+                        self.push_history();
                     }
                 });
             }
@@ -1175,43 +1159,43 @@ impl ConfigApp {
         ui.separator();
         
         if ui.checkbox(&mut self.state.viz.enabled, "Enable module").changed() {
-            self.state.push_history();
+            self.push_history();
         }
         
         if self.state.viz.enabled {
             ui.horizontal(|ui| {
                 ui.label("Update interval:");
                 if ui.add(Slider::new(&mut self.state.viz.update_interval, 1..=100)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
             
             ui.horizontal(|ui| {
                 ui.label("Output directory:");
                 if ui.text_edit_singleline(&mut self.state.viz.output_dir).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
             
             if ui.checkbox(&mut self.state.viz.save_plots, "Save plots").changed() {
-                self.state.push_history();
+                self.push_history();
             }
             
             ui.collapsing("📈 Plot types", |ui| {
                 if ui.checkbox(&mut self.state.viz.phase_distribution, "Phase distribution").changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
                 if ui.checkbox(&mut self.state.viz.maturity_histogram, "Maturity histogram").changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
                 if ui.checkbox(&mut self.state.viz.heatmap, "Heatmap").changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
                 if ui.checkbox(&mut self.state.viz.timeseries, "Time series").changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
                 if ui.checkbox(&mut self.state.viz.three_d_enabled, "3D visualization").changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
         }
@@ -1231,7 +1215,7 @@ impl ConfigApp {
                         .logarithmic(true)
                         .suffix("")
                 ).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
 
@@ -1241,7 +1225,7 @@ impl ConfigApp {
                 if ui.add(
                     Slider::new(&mut self.state.cdata.mother_bias, 0.0..=1.0)
                 ).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
 
@@ -1252,7 +1236,7 @@ impl ConfigApp {
                     Slider::new(&mut self.state.cdata.age_bias_coefficient, 0.0..=0.01)
                         .logarithmic(true)
                 ).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
         });
@@ -1278,7 +1262,7 @@ impl ConfigApp {
                         .suffix(" деление")
                 ).changed() {
                     self.state.cdata.de_novo_centriole_division = div as u32;
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
 
@@ -1302,7 +1286,7 @@ impl ConfigApp {
                  следующее поколение начнёт с DifferentiationStatus.Totipotent.\n\
                  Биологически корректный дефолт: включено."
             ).changed() {
-                self.state.push_history();
+                self.push_history();
             }
         });
 
@@ -1316,7 +1300,7 @@ impl ConfigApp {
                 ui.label("spindle_weight:")
                   .on_hover_text("Вклад потери spindle_fidelity в myeloid_bias");
                 if ui.add(Slider::new(&mut self.state.cdata.spindle_weight, 0.0..=1.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
 
@@ -1324,7 +1308,7 @@ impl ConfigApp {
                 ui.label("cilia_weight:")
                   .on_hover_text("Вклад потери ciliary_function в myeloid_bias");
                 if ui.add(Slider::new(&mut self.state.cdata.cilia_weight, 0.0..=1.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
 
@@ -1332,7 +1316,7 @@ impl ConfigApp {
                 ui.label("ros_weight:")
                   .on_hover_text("Вклад ros_level в myeloid_bias");
                 if ui.add(Slider::new(&mut self.state.cdata.ros_weight, 0.0..=1.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
 
@@ -1340,7 +1324,7 @@ impl ConfigApp {
                 ui.label("aggregate_weight:")
                   .on_hover_text("Вклад protein_aggregates в myeloid_bias");
                 if ui.add(Slider::new(&mut self.state.cdata.aggregate_weight, 0.0..=1.0)).changed() {
-                    self.state.push_history();
+                    self.push_history();
                 }
             });
 
@@ -1371,21 +1355,21 @@ impl ConfigApp {
                         DamagePreset::Normal,
                         DamagePreset::Normal.label(),
                     ).clicked() {
-                        self.state.push_history();
+                        self.push_history();
                     }
                     if ui.selectable_value(
                         &mut self.state.cdata.damage_preset,
                         DamagePreset::Progeria,
                         DamagePreset::Progeria.label(),
                     ).clicked() {
-                        self.state.push_history();
+                        self.push_history();
                     }
                     if ui.selectable_value(
                         &mut self.state.cdata.damage_preset,
                         DamagePreset::Longevity,
                         DamagePreset::Longevity.label(),
                     ).clicked() {
-                        self.state.push_history();
+                        self.push_history();
                     }
                 });
 
@@ -1471,7 +1455,7 @@ impl ConfigApp {
                     if ui.button("Load").clicked() {
                         self.state.message = Some(format!("✅ Loaded: {}", self.state.config_file));
                         self.state.show_load_dialog = false;
-                        self.state.push_history();
+                        self.push_history();
                     }
                     
                     if ui.button("Cancel").clicked() {
@@ -1502,7 +1486,7 @@ impl ConfigApp {
                             (preset.apply)(&mut self.state);
                             self.state.message = Some(format!("✅ Applied preset: {}", preset.name));
                             self.state.show_preset_dialog = false;
-                            self.state.push_history();
+                            self.push_history();
                         }
                     });
                     ui.label(format!("   {}", preset.description));
