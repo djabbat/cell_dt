@@ -18,8 +18,9 @@ use cell_dt_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use log::{info, debug, warn};
-use rand::Rng;
-use std::collections::{HashMap, HashSet};
+use rand::{Rng, SeedableRng};
+use rand::rngs::StdRng;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Типы сигнальных путей
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -363,8 +364,7 @@ impl TranscriptomeState {
     }
     
     /// Обновление экспрессии генов
-    pub fn update_expression(&mut self, dt: f32, cell_cycle: &CellCycleStateExtended, centriole: Option<&CentriolePair>) {
-        let mut rng = rand::thread_rng();
+    pub fn update_expression(&mut self, rng: &mut impl Rng, dt: f32, cell_cycle: &CellCycleStateExtended, centriole: Option<&CentriolePair>) {
         
         // Влияние центриоли на транскрипцию
         if let Some(cent) = centriole {
@@ -588,7 +588,8 @@ impl Default for TranscriptomeParams {
 pub struct TranscriptomeModule {
     params: TranscriptomeParams,
     step_count: u64,
-    expression_history: Vec<HashMap<String, f32>>,
+    expression_history: VecDeque<HashMap<String, f32>>,
+    rng: StdRng,
 }
 
 impl TranscriptomeModule {
@@ -596,36 +597,40 @@ impl TranscriptomeModule {
         Self {
             params: TranscriptomeParams::default(),
             step_count: 0,
-            expression_history: Vec::new(),
+            expression_history: VecDeque::new(),
+            rng: StdRng::from_entropy(),
         }
     }
-    
+
     pub fn with_params(params: TranscriptomeParams) -> Self {
         Self {
             params,
             step_count: 0,
-            expression_history: Vec::new(),
+            expression_history: VecDeque::new(),
+            rng: StdRng::from_entropy(),
         }
     }
-    
+
     /// Обновление транскриптома для одной клетки
-    fn update_transcriptome(&self, transcriptome: &mut TranscriptomeState, 
-                           cell_cycle: &CellCycleStateExtended, 
+    fn update_transcriptome(&mut self, transcriptome: &mut TranscriptomeState,
+                           cell_cycle: &CellCycleStateExtended,
                            centriole: Option<&CentriolePair>,
                            dt: f32) {
-        transcriptome.update_expression(dt, cell_cycle, centriole);
+        transcriptome.update_expression(&mut self.rng, dt, cell_cycle, centriole);
     }
-    
+
     /// Мутация генов (редкое событие)
-    fn apply_mutation(&self, transcriptome: &mut TranscriptomeState) {
-        let mut rng = rand::thread_rng();
-        
-        if rng.gen::<f32>() < self.params.mutation_rate {
-            // Выбираем случайный ген для мутации
-            if let Some(gene) = transcriptome.genes.values_mut().next() {
-                gene.expression_level *= 2.0;
-                gene.max_expression *= 1.5;
-                warn!("Gene {} mutated!", gene.name);
+    fn apply_mutation(&mut self, transcriptome: &mut TranscriptomeState) {
+        if self.rng.gen::<f32>() < self.params.mutation_rate {
+            // Выбираем случайный ген для мутации (не первый из HashMap!)
+            let keys: Vec<String> = transcriptome.genes.keys().cloned().collect();
+            if !keys.is_empty() {
+                let idx = self.rng.gen_range(0..keys.len());
+                if let Some(gene) = transcriptome.genes.get_mut(&keys[idx]) {
+                    gene.expression_level = (gene.expression_level * 2.0).min(gene.max_expression);
+                    gene.max_expression *= 1.5;
+                    warn!("Gene {} mutated!", gene.name);
+                }
             }
         }
     }
@@ -635,7 +640,11 @@ impl SimulationModule for TranscriptomeModule {
     fn name(&self) -> &str {
         "transcriptome_module"
     }
-    
+
+    fn set_seed(&mut self, seed: u64) {
+        self.rng = StdRng::seed_from_u64(seed);
+    }
+
     fn step(&mut self, world: &mut World, dt: f64) -> SimulationResult<()> {
         self.step_count += 1;
         let dt_f32 = dt as f32;
@@ -670,11 +679,11 @@ impl SimulationModule for TranscriptomeModule {
         // Сохраняем историю экспрессии для анализа
         if self.step_count.is_multiple_of(100) {
             if let Some((_, (transcriptome, _, _, _))) = query.iter().next() {
-                self.expression_history.push(transcriptome.get_expression_profile());
-                
-                // Ограничиваем историю
+                self.expression_history.push_back(transcriptome.get_expression_profile());
+
+                // Ограничиваем историю — VecDeque даёт O(1) удаление с начала
                 if self.expression_history.len() > 100 {
-                    self.expression_history.remove(0);
+                    self.expression_history.pop_front();
                 }
                 
                 // Логируем статистику

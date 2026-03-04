@@ -6,8 +6,6 @@ use serde::{Deserialize, Serialize};
 /// Параметры прохождения стадий развития
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DevelopmentParams {
-    /// Исходный запас S-индукторов (≈ лимит Хейфлика)
-    pub s_inducers_initial: u32,
     /// Исходный запас H-индукторов (число индукторных делений до мейоза)
     pub h_inducers_initial: u32,
     /// Максимальная продолжительность жизни (лет) — смерть от старости
@@ -19,7 +17,6 @@ pub struct DevelopmentParams {
 impl Default for DevelopmentParams {
     fn default() -> Self {
         Self {
-            s_inducers_initial:     50,
             h_inducers_initial:     4,
             max_lifespan_years:     120.0,
             senescence_death_frailty: 0.95,

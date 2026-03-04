@@ -31,7 +31,9 @@ pub struct DamageParams {
     /// Возраст (в годах), с которого активируется SASP (inflammaging)
     pub sasp_onset_age: f32,
 
-    /// Порог суммарного повреждения для входа в сенесценцию
+    /// Порог суммарного повреждения для входа в сенесценцию.
+    /// Синхронизируется в `CentriolarDamageState::senescence_threshold`
+    /// через `accumulate_damage()` каждый шаг.
     pub senescence_threshold: f32,
 
     /// Дополнительный множитель повреждения после 40 лет (антагонистическая плейотропия)
@@ -103,13 +105,24 @@ impl DamageParams {
     }
 }
 
-/// Обновить состояние повреждений центриоли за один временной шаг (dt_years)
+/// Обновить состояние повреждений центриоли за один временной шаг (dt_years).
+///
+/// # Параметры
+/// * `ros_level_boost` — внешний аддитивный буст ROS от воспаления (InflammagingState).
+///   Применяется ДО вычисления `protein_carbonylation`, обеспечивая корректную петлю:
+///   `inflammaging → ros_level↑ → protein_carbonylation↑`.
+///   Значение 0.0 означает отсутствие буста (нормальный режим).
 pub fn accumulate_damage(
     damage: &mut cell_dt_core::components::CentriolarDamageState,
     params: &DamageParams,
     age_years: f32,
     dt_years: f32,
+    ros_level_boost: f32,
 ) {
+    // Синхронизировать senescence_threshold из DamageParams
+    // (позволяет менять порог через set_params() во время симуляции)
+    damage.senescence_threshold = params.senescence_threshold;
+
     // Множитель: после 40 лет повреждение нарастает быстрее
     let age_multiplier = if age_years > 40.0 {
         params.midlife_damage_multiplier
@@ -117,12 +130,18 @@ pub fn accumulate_damage(
         1.0
     };
 
-    // Петля обратной связи: накопленный ущерб усиливает ROS
-    let ros_boost = 1.0 + params.ros_feedback_coefficient * damage.total_damage_score();
+    // Петля обратной связи: накопленный ущерб усиливает ROS.
+    // ros_level_boost — внешний вклад от inflammaging (межшаговая петля).
+    let base_ros = 0.05 + age_years * 0.005;
+    let intrinsic_ros = base_ros
+        + params.ros_feedback_coefficient * damage.total_damage_score();
+    // Применяем буст ПЕРЕД расчётом повреждений — так ros_boost влияет на carbonylation
+    damage.ros_level = (intrinsic_ros + ros_level_boost).min(1.0);
 
+    let ros_boost = 1.0 + params.ros_feedback_coefficient * damage.total_damage_score();
     let effective_dt = dt_years * age_multiplier * ros_boost;
 
-    // Молекулярные повреждения
+    // Молекулярные повреждения (используют обновлённый ros_level)
     damage.protein_carbonylation = (damage.protein_carbonylation
         + params.base_ros_damage_rate * damage.ros_level * effective_dt).min(1.0);
 
@@ -145,11 +164,6 @@ pub fn accumulate_damage(
     damage.cep170_integrity = (damage.cep170_integrity
         - params.cep170_loss_rate * effective_dt).max(0.0);
 
-    // ROS нарастает с возрастом и повреждениями (петля)
-    let base_ros = 0.05 + age_years * 0.005;
-    damage.ros_level = (base_ros
-        + params.ros_feedback_coefficient * damage.total_damage_score()).min(1.0);
-
-    // Пересчёт производных метрик
+    // Пересчёт производных метрик (spindle_fidelity, ciliary_function, is_senescent)
     damage.update_functional_metrics();
 }

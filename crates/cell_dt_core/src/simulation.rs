@@ -3,7 +3,6 @@ use crate::{
     Dead,
     hecs::World,
 };
-use std::collections::HashMap;
 use std::time::Instant;
 use log::{info, debug, warn};
 
@@ -36,7 +35,9 @@ impl Default for SimulationConfig {
 
 pub struct SimulationManager {
     world: World,
-    modules: HashMap<String, Box<dyn SimulationModule>>,
+    /// Модули хранятся в Vec для гарантии порядка выполнения.
+    /// Порядок определяется порядком вызовов `register_module()`.
+    modules: Vec<(String, Box<dyn SimulationModule>)>,
     config: SimulationConfig,
     current_step: u64,
     current_time: f64,
@@ -47,48 +48,56 @@ impl SimulationManager {
         if let Some(seed) = config.seed {
             info!("Using random seed: {}", seed);
         }
-        
+
         if let Some(num_threads) = config.num_threads {
             rayon::ThreadPoolBuilder::new()
                 .num_threads(num_threads)
                 .build_global()
                 .unwrap_or_else(|_| warn!("Failed to set Rayon thread pool"));
         }
-        
+
         Self {
             world: World::new(),
-            modules: HashMap::new(),
+            modules: Vec::new(),
             config,
             current_step: 0,
             current_time: 0.0,
         }
     }
-    
+
     pub fn register_module(&mut self, module: Box<dyn SimulationModule>) -> SimulationResult<()> {
         let name = module.name().to_string();
-        
-        if self.modules.contains_key(&name) {
+
+        if self.modules.iter().any(|(n, _)| n == &name) {
             return Err(SimulationError::ModuleError(
                 format!("Module '{}' already registered", name)
             ));
         }
-        
-        info!("Registering module: {}", name);
-        self.modules.insert(name, module);
+
+        info!("Registering module: {} (position {})", name, self.modules.len());
+        self.modules.push((name, module));
         Ok(())
     }
-    
+
     pub fn initialize(&mut self) -> SimulationResult<()> {
         info!("Initializing simulation with {} modules", self.modules.len());
-        
-        for (_name, module) in self.modules.iter_mut() {
-            debug!("Initializing module: {}", _name);
+
+        // Передаём seed каждому модулю перед инициализацией
+        if let Some(seed) = self.config.seed {
+            for (name, module) in self.modules.iter_mut() {
+                debug!("Setting seed {} for module: {}", seed, name);
+                module.set_seed(seed);
+            }
+        }
+
+        for (name, module) in self.modules.iter_mut() {
+            debug!("Initializing module: {}", name);
             module.initialize(&mut self.world)?;
         }
-        
+
         Ok(())
     }
-    
+
     pub fn step(&mut self) -> SimulationResult<()> {
         if self.current_step >= self.config.max_steps {
             return Ok(());
@@ -96,7 +105,8 @@ impl SimulationManager {
 
         let dt = self.config.dt;
 
-        for (_name, module) in self.modules.iter_mut() {
+        // Модули выполняются в порядке регистрации (Vec гарантирует порядок)
+        for (_, module) in self.modules.iter_mut() {
             module.step(&mut self.world, dt)?;
         }
 
@@ -112,6 +122,27 @@ impl SimulationManager {
 
         self.current_step += 1;
         self.current_time += dt;
+
+        Ok(())
+    }
+
+    pub fn run(&mut self) -> SimulationResult<()> {
+        self.initialize()?;
+
+        info!(
+            "Starting simulation: {} steps, dt = {}",
+            self.config.max_steps,
+            self.config.dt,
+        );
+
+        let start_time = Instant::now();
+
+        while self.current_step < self.config.max_steps {
+            self.step()?;
+        }
+
+        let total_time = start_time.elapsed();
+        info!("Simulation completed in {:?}. Final time: {}", total_time, self.current_time);
 
         Ok(())
     }
@@ -133,46 +164,30 @@ impl SimulationManager {
         }
         count
     }
-    
-    pub fn run(&mut self) -> SimulationResult<()> {
-        self.initialize()?;
-        
-        info!(
-            "Starting simulation: {} steps, dt = {}", 
-            self.config.max_steps, 
-            self.config.dt,
-        );
-        
-        let start_time = Instant::now();
-        
-        while self.current_step < self.config.max_steps {
-            self.step()?;
-        }
-        
-        let total_time = start_time.elapsed();
-        info!("Simulation completed in {:?}. Final time: {}", total_time, self.current_time);
-        
-        Ok(())
-    }
-    
+
     pub fn world(&self) -> &World {
         &self.world
     }
-    
+
     pub fn world_mut(&mut self) -> &mut World {
         &mut self.world
     }
-    
+
     pub fn current_step(&self) -> u64 {
         self.current_step
     }
-    
+
     pub fn current_time(&self) -> f64 {
         self.current_time
     }
-    
+
     pub fn config(&self) -> &SimulationConfig {
         &self.config
+    }
+
+    /// Имена зарегистрированных модулей в порядке выполнения.
+    pub fn module_names(&self) -> Vec<&str> {
+        self.modules.iter().map(|(n, _)| n.as_str()).collect()
     }
 }
 
@@ -190,6 +205,21 @@ mod tests {
         fn set_params(&mut self, _params: &serde_json::Value) -> SimulationResult<()> { Ok(()) }
     }
 
+    struct OrderTracker {
+        name: String,
+        order_log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl SimulationModule for OrderTracker {
+        fn name(&self) -> &str { &self.name }
+        fn step(&mut self, _world: &mut World, _dt: f64) -> SimulationResult<()> {
+            self.order_log.lock().unwrap().push(self.name.clone());
+            Ok(())
+        }
+        fn get_params(&self) -> serde_json::Value { serde_json::json!({}) }
+        fn set_params(&mut self, _params: &serde_json::Value) -> SimulationResult<()> { Ok(()) }
+    }
+
     #[test]
     fn test_simulation_manager_new() {
         let config = SimulationConfig::default();
@@ -202,13 +232,36 @@ mod tests {
     fn test_register_module() {
         let config = SimulationConfig::default();
         let mut sim = SimulationManager::new(config);
-        
+
         let result = sim.register_module(Box::new(TestModule));
         assert!(result.is_ok());
-        
+
         // Попытка зарегистрировать тот же модуль должна вернуть ошибку
         let result2 = sim.register_module(Box::new(TestModule));
         assert!(result2.is_err());
+    }
+
+    #[test]
+    fn test_module_execution_order_is_guaranteed() {
+        // Vec гарантирует порядок выполнения = порядок регистрации
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let config = SimulationConfig { max_steps: 1, ..Default::default() };
+        let mut sim = SimulationManager::new(config);
+
+        for name in &["alpha", "beta", "gamma", "delta"] {
+            sim.register_module(Box::new(OrderTracker {
+                name: name.to_string(),
+                order_log: log.clone(),
+            })).unwrap();
+        }
+
+        sim.initialize().unwrap();
+        sim.step().unwrap();
+
+        let execution_order = log.lock().unwrap().clone();
+        assert_eq!(execution_order, vec!["alpha", "beta", "gamma", "delta"],
+            "Порядок выполнения модулей должен строго соответствовать порядку регистрации");
     }
 
     #[test]

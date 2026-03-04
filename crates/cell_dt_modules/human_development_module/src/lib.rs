@@ -33,7 +33,8 @@ use cell_dt_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use log::{info, debug};
-use rand::Rng;
+use rand::{Rng, SeedableRng};
+use rand::rngs::StdRng;
 use std::collections::VecDeque;
 
 mod inducers;
@@ -194,6 +195,8 @@ pub struct HumanDevelopmentModule {
     damage_rates: DamageParams,
     /// Флаг: параметры повреждений изменились через `set_params()` — нужна синхронизация.
     damage_rates_dirty: bool,
+    /// Генератор случайных чисел — сидируется через `set_seed()` для воспроизводимости.
+    rng: StdRng,
 }
 
 impl HumanDevelopmentModule {
@@ -203,6 +206,7 @@ impl HumanDevelopmentModule {
             step_count: 0,
             damage_rates: DamageParams::default(),
             damage_rates_dirty: false,
+            rng: StdRng::from_entropy(),
         }
     }
 
@@ -212,6 +216,7 @@ impl HumanDevelopmentModule {
             step_count: 0,
             damage_rates: DamageParams::default(),
             damage_rates_dirty: false,
+            rng: StdRng::from_entropy(),
         }
     }
 
@@ -262,7 +267,7 @@ impl HumanDevelopmentModule {
 
         comp.tissue_state.senescent_fraction =
             (dam.total_damage_score() * 0.85).min(1.0);
-        comp.tissue_state.update_functional_capacity();
+        // update_functional_capacity() вызывается ОДИН РАЗ в конце всех тканевых обновлений
     }
 
     /// O₂-зависимое отщепление индукторов (контролируемый путь, одинаковый для M и D).
@@ -351,6 +356,11 @@ impl HumanDevelopmentModule {
 impl SimulationModule for HumanDevelopmentModule {
     fn name(&self) -> &str { "human_development_module" }
 
+    /// Устанавливает seed для воспроизводимости: отщепление индукторов (O₂/PTM) детерминировано.
+    fn set_seed(&mut self, seed: u64) {
+        self.rng = StdRng::seed_from_u64(seed);
+    }
+
     fn step(&mut self, world: &mut World, dt: f64) -> SimulationResult<()> {
         self.step_count += 1;
         let dt_days  = dt * self.params.time_acceleration;
@@ -363,8 +373,6 @@ impl SimulationModule for HumanDevelopmentModule {
             self.sync_damage_rates(world);
             self.damage_rates_dirty = false;
         }
-
-        let mut rng = rand::thread_rng();
 
         // Шаг 1: обновить HumanDevelopmentComponent (основная логика CDATA)
         // Также читаем InflammagingState (опционально) — пишется myeloid_shift_module.
@@ -385,6 +393,8 @@ impl SimulationModule for HumanDevelopmentModule {
             let infl_ros_boost        = inflammaging_opt.map_or(0.0, |i| i.ros_boost);
             let infl_niche_impairment = inflammaging_opt.map_or(0.0, |i| i.niche_impairment);
             let infl_sasp             = inflammaging_opt.map_or(0.0, |i| i.sasp_intensity);
+            // Вклад эпигенетических часов в ROS (лаг 1 шаг, аналогично inflammaging)
+            let epi_ros_from_prev = epigenetic_opt.as_ref().map_or(0.0, |e| e.epi_ros_contribution);
             // Истощение делений (asymmetric_division_module → stem_cell_pool)
             let exhaustion_ratio      = exhaustion_opt.map_or(0.0, |e| e.exhaustion_ratio());
             // PTM-уровни из CentriolePair (centriole_module → CentriolarDamageState bridge)
@@ -418,18 +428,23 @@ impl SimulationModule for HumanDevelopmentModule {
             }
 
             if self.params.enable_aging {
-                // 3. Молекулярные повреждения (5 типов + ROS-петля)
+                // 3. Молекулярные повреждения (5 типов + ROS-петля).
+                // infl_ros_boost передаётся ВНУТРЬ accumulate_damage() — так он влияет
+                // на protein_carbonylation в том же шаге (корректная межшаговая петля).
                 let age_years = comp.age_years() as f32;
                 accumulate_damage(
                     &mut comp.centriolar_damage,
                     &comp.damage_rates,
                     age_years,
                     dt_years,
+                    infl_ros_boost + epi_ros_from_prev,  // inflammaging + эпигенетические часы
                 );
 
                 // 3б. PTM bridge: структурные PTM CentriolePair → функциональные повреждения.
-                // Масштаб 0.002/год при PTM=1.0 → ~33% от базовой скорости накопления.
                 // Лаг один шаг (centriole_module запускается до human_development_module).
+                // Масштаб 0.002/год при PTM=1.0, не пересекается с базовой скоростью acetylation_rate
+                // (базовый путь — структурное накопление ПТМ со временем; bridge — дополнительный
+                // вклад конкретных PTM-меток, измеренных CentrioleModule).
                 {
                     const PTM_SCALE: f32 = 0.002;
                     let dam = &mut comp.centriolar_damage;
@@ -447,24 +462,14 @@ impl SimulationModule for HumanDevelopmentModule {
                     }
                 }
 
-                // 3в. Inflammaging-буст ROS (петля от миелоидного сдвига).
-                // Применяем после accumulate_damage, т.к. та перезаписывает ros_level.
-                // Лаг в один шаг допустим: myeloid_shift_module запускается следом.
-                if infl_ros_boost > 0.0 {
-                    comp.centriolar_damage.ros_level =
-                        (comp.centriolar_damage.ros_level * (1.0 + infl_ros_boost)).min(1.0);
-                    // Пересчитать производные метрики (spindle_fidelity, ciliary_function)
-                    comp.centriolar_damage.update_functional_metrics();
-                }
-
                 // 4. O₂-зависимое отщепление индукторов (контролируемый путь, M=D=0.5)
-                Self::apply_oxygen_detachment(comp, &mut rng);
+                Self::apply_oxygen_detachment(comp, &mut self.rng);
 
                 // 4б. PTM-опосредованное истощение (только мать — механизм истощения пула).
                 // Независим от O₂: структурные ПТМ матери ослабляют связи индукторов.
                 // Срабатывает только при наличии PTM-асимметрии мать > дочь.
                 if ptm_asymmetry > 0.01 {
-                    Self::apply_ptm_exhaustion(comp, ptm_asymmetry, &mut rng);
+                    Self::apply_ptm_exhaustion(comp, ptm_asymmetry, &mut self.rng);
                 }
 
                 // 5. Тканевое состояние (Трек A + Трек B)
@@ -475,7 +480,6 @@ impl SimulationModule for HumanDevelopmentModule {
                     comp.tissue_state.regeneration_tempo =
                         (comp.tissue_state.regeneration_tempo
                             * (1.0 - infl_niche_impairment)).max(0.0);
-                    comp.tissue_state.update_functional_capacity();
                 }
 
                 // 5в. Истощение пула из-за симметричных дифф. делений
@@ -485,8 +489,10 @@ impl SimulationModule for HumanDevelopmentModule {
                     const POOL_DEPLETION_RATE: f32 = 0.0002;
                     comp.tissue_state.stem_cell_pool = (comp.tissue_state.stem_cell_pool
                         - exhaustion_ratio * POOL_DEPLETION_RATE * dt_years as f32).max(0.0);
-                    comp.tissue_state.update_functional_capacity();
                 }
+
+                // Пересчёт functional_capacity — ОДИН РАЗ после всех тканевых обновлений
+                comp.tissue_state.update_functional_capacity();
 
                 // 6. Фенотипы старения
                 Self::update_aging_phenotypes(comp);
@@ -500,28 +506,43 @@ impl SimulationModule for HumanDevelopmentModule {
 
                 // 6в. Трек C: укорачивание теломер
                 // Скорость = shortening_per_division × division_rate × spindle_factor × ros_factor
+                //
+                // TERT (теломераза) активен в двух ситуациях → укорочения нет:
+                //  1. Эмбриональные стадии (Zygote..Fetal): TERT максимально активен
+                //  2. Стволовые клетки: spindle_fidelity ≥ 0.75 (прокси Pluripotent/Totipotent)
+                //     (теломери не уkorachivaiutsia v стволовых клетках — TERT защищает геном)
                 if let Some(ref mut tel) = telomere_opt {
-                    let div_rate: f32 = match comp.stage {
+                    let embryonic = matches!(
+                        comp.stage,
                         HumanDevelopmentalStage::Zygote
-                        | HumanDevelopmentalStage::Cleavage     => 365.0 * 2.0,
-                        HumanDevelopmentalStage::Morula
-                        | HumanDevelopmentalStage::Blastocyst   => 365.0 * 1.0,
-                        HumanDevelopmentalStage::Implantation
-                        | HumanDevelopmentalStage::Gastrulation => 365.0 * 0.5,
-                        HumanDevelopmentalStage::Neurulation
-                        | HumanDevelopmentalStage::Organogenesis => 365.0 * 0.3,
-                        HumanDevelopmentalStage::Fetal           => 52.0,
-                        HumanDevelopmentalStage::Newborn
-                        | HumanDevelopmentalStage::Childhood     => 24.0,
-                        HumanDevelopmentalStage::Adolescence
-                        | HumanDevelopmentalStage::Adult         => 12.0,
-                        HumanDevelopmentalStage::MiddleAge       => 6.0,
-                        HumanDevelopmentalStage::Elderly         => 2.0,
-                    };
-                    let base = tel.shortening_per_division * div_rate * dt_years;
-                    let spindle_f = 1.0 + (1.0 - comp.centriolar_damage.spindle_fidelity) * 0.5;
-                    let ros_f    = 1.0 + comp.centriolar_damage.ros_level * 0.3;
-                    tel.mean_length = (tel.mean_length - base * spindle_f * ros_f).max(0.0);
+                        | HumanDevelopmentalStage::Cleavage
+                        | HumanDevelopmentalStage::Morula
+                        | HumanDevelopmentalStage::Blastocyst
+                        | HumanDevelopmentalStage::Implantation
+                        | HumanDevelopmentalStage::Gastrulation
+                        | HumanDevelopmentalStage::Neurulation
+                        | HumanDevelopmentalStage::Organogenesis
+                        | HumanDevelopmentalStage::Fetal
+                    );
+                    let stem_cell = comp.centriolar_damage.spindle_fidelity >= 0.75;
+                    let tert_active = embryonic || stem_cell;
+
+                    if !tert_active {
+                        let div_rate: f32 = match comp.stage {
+                            HumanDevelopmentalStage::Newborn
+                            | HumanDevelopmentalStage::Childhood     => 24.0,
+                            HumanDevelopmentalStage::Adolescence
+                            | HumanDevelopmentalStage::Adult         => 12.0,
+                            HumanDevelopmentalStage::MiddleAge       => 6.0,
+                            HumanDevelopmentalStage::Elderly         => 2.0,
+                            _                                        => 0.0, // TERT-активные стадии не дойдут сюда
+                        };
+                        let base = tel.shortening_per_division * div_rate * dt_years;
+                        let spindle_f = 1.0 + (1.0 - comp.centriolar_damage.spindle_fidelity) * 0.5;
+                        let ros_f    = 1.0 + comp.centriolar_damage.ros_level * 0.3;
+                        tel.mean_length = (tel.mean_length - base * spindle_f * ros_f).max(0.0);
+                    }
+
                     tel.is_critically_short = tel.mean_length < 0.3;
                     if tel.is_critically_short
                         && !comp.active_phenotypes.contains(&AgingPhenotype::TelomereShortening)
@@ -533,10 +554,24 @@ impl SimulationModule for HumanDevelopmentModule {
                 // 6г. Трек D: эпигенетические часы
                 // clock_acceleration = 1.0 + total_damage × 0.5
                 // methylation_age увеличивается быстрее хронологического при повреждениях
+                // Обратная связь: опережение эпигенетических часов → дополнительный ROS
                 if let Some(ref mut epi) = epigenetic_opt {
                     let damage = comp.centriolar_damage.total_damage_score();
                     epi.clock_acceleration = 1.0 + damage * 0.5;
                     epi.methylation_age += dt_years * epi.clock_acceleration;
+
+                    // Опережение эпигенетического возраста над хронологическим → ROS-буст
+                    // (CpG-гипометилирование нестабилизирует хроматин → транспозоны → ROS)
+                    let chron_age = comp.age_years() as f32;
+                    let epi_excess = (epi.methylation_age - chron_age).max(0.0);
+                    epi.epi_ros_contribution = (epi_excess / 200.0).clamp(0.0, 0.05);
+
+                    // Активация фенотипа при значимом ускорении часов
+                    if epi.clock_acceleration > 1.2
+                        && !comp.active_phenotypes.contains(&AgingPhenotype::EpigeneticChanges)
+                    {
+                        comp.active_phenotypes.push(AgingPhenotype::EpigeneticChanges);
+                    }
                 }
 
                 // 7. Смерть:
@@ -804,13 +839,13 @@ mod ptm_bridge_tests {
         // Контрольная клетка: только accumulate_damage
         let mut damage_ctrl = CentriolarDamageState::pristine();
         for _ in 0..365 {
-            accumulate_damage(&mut damage_ctrl, &params, age_yr, DT_YEARS);
+            accumulate_damage(&mut damage_ctrl, &params, age_yr, DT_YEARS, 0.0);
         }
 
         // Клетка с PTM bridge: высокое ацетилирование
         let mut damage_ptm = CentriolarDamageState::pristine();
         for _ in 0..365 {
-            accumulate_damage(&mut damage_ptm, &params, age_yr, DT_YEARS);
+            accumulate_damage(&mut damage_ptm, &params, age_yr, DT_YEARS, 0.0);
             apply_ptm_bridge(&mut damage_ptm, 1.0, 0.0, 0.0, 0.0, DT_YEARS);
         }
 
@@ -828,8 +863,8 @@ mod ptm_bridge_tests {
         let mut damage_ptm  = CentriolarDamageState::pristine();
 
         for _ in 0..365 {
-            accumulate_damage(&mut damage_ctrl, &params, age_yr, DT_YEARS);
-            accumulate_damage(&mut damage_ptm,  &params, age_yr, DT_YEARS);
+            accumulate_damage(&mut damage_ctrl, &params, age_yr, DT_YEARS, 0.0);
+            accumulate_damage(&mut damage_ptm,  &params, age_yr, DT_YEARS, 0.0);
             apply_ptm_bridge(&mut damage_ptm, 0.0, 1.0, 0.0, 0.0, DT_YEARS); // только oxidation
         }
 
@@ -847,8 +882,8 @@ mod ptm_bridge_tests {
         let mut damage_zero = CentriolarDamageState::pristine();
 
         for _ in 0..365 {
-            accumulate_damage(&mut damage_ctrl, &params, age_yr, DT_YEARS);
-            accumulate_damage(&mut damage_zero, &params, age_yr, DT_YEARS);
+            accumulate_damage(&mut damage_ctrl, &params, age_yr, DT_YEARS, 0.0);
+            accumulate_damage(&mut damage_zero, &params, age_yr, DT_YEARS, 0.0);
             apply_ptm_bridge(&mut damage_zero, 0.0, 0.0, 0.0, 0.0, DT_YEARS);
         }
 
@@ -869,8 +904,8 @@ mod ptm_bridge_tests {
         let mut damage_ptm  = CentriolarDamageState::pristine();
 
         for _ in 0..steps {
-            accumulate_damage(&mut damage_ctrl, &params, age_yr, DT_YEARS);
-            accumulate_damage(&mut damage_ptm,  &params, age_yr, DT_YEARS);
+            accumulate_damage(&mut damage_ctrl, &params, age_yr, DT_YEARS, 0.0);
+            accumulate_damage(&mut damage_ptm,  &params, age_yr, DT_YEARS, 0.0);
             apply_ptm_bridge(&mut damage_ptm, 1.0, 1.0, 1.0, 1.0, DT_YEARS);
         }
 

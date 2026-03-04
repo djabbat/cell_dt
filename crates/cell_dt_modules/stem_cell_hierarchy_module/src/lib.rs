@@ -14,7 +14,8 @@ use cell_dt_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use log::{info, debug};
-use rand::Rng;
+use rand::{Rng, SeedableRng};
+use rand::rngs::StdRng;
 
 // PotencyLevel определён в cell_dt_core::components (glob-импорт выше).
 // Переэкспортируем для совместимости с существующими примерами.
@@ -100,20 +101,25 @@ impl Default for StemCellHierarchyParams {
 pub struct StemCellHierarchyModule {
     params: StemCellHierarchyParams,
     step_count: u64,
+    rng: StdRng,
 }
 
 impl StemCellHierarchyModule {
     pub fn new() -> Self {
-        Self { params: StemCellHierarchyParams::default(), step_count: 0 }
+        Self { params: StemCellHierarchyParams::default(), step_count: 0, rng: StdRng::from_entropy() }
     }
 
     pub fn with_params(params: StemCellHierarchyParams) -> Self {
-        Self { params, step_count: 0 }
+        Self { params, step_count: 0, rng: StdRng::from_entropy() }
     }
 }
 
 impl SimulationModule for StemCellHierarchyModule {
     fn name(&self) -> &str { "stem_cell_hierarchy_module" }
+
+    fn set_seed(&mut self, seed: u64) {
+        self.rng = StdRng::seed_from_u64(seed);
+    }
 
     /// Синхронизирует `StemCellHierarchyState` с молекулярным состоянием центриоли.
     ///
@@ -131,8 +137,6 @@ impl SimulationModule for StemCellHierarchyModule {
         let plasticity_rate      = self.params.plasticity_rate;
         let plasticity_threshold = self.params.differentiation_threshold;
 
-        let mut rng = rand::thread_rng();
-
         for (_, (hierarchy, damage)) in
             world.query_mut::<(&mut StemCellHierarchyState, &CentriolarDamageState)>()
         {
@@ -140,7 +144,7 @@ impl SimulationModule for StemCellHierarchyModule {
             if enable_plasticity
                 && hierarchy.potency_level == PotencyLevel::Oligopotent
                 && damage.spindle_fidelity > plasticity_threshold
-                && rng.gen::<f32>() < plasticity_rate
+                && self.rng.gen::<f32>() < plasticity_rate
             {
                 hierarchy.set_potency(PotencyLevel::Pluripotent);
                 hierarchy.dedifferentiation_count += 1;

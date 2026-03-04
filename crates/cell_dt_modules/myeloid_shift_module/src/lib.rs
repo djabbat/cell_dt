@@ -187,11 +187,16 @@ impl SimulationModule for MyeloidShiftModule {
         )>() {
             let myeloid_bias = self.compute_myeloid_bias(damage);
 
-            // Лимфоидный дефицит — линейный относительно bias
-            let lymphoid_deficit = myeloid_bias;
+            // Лимфоидный дефицит — независимая метрика потери лимфоидного пути:
+            //   cilia↓ → Wnt/Notch/Shh↓ → нет поддержки лимфоидных прогениторов (55%)
+            //   aggregates↑ → Ikaros/IKZF1 захвачен агрегатами → лимфоидные TF потеряны (35%)
+            //   hyperacetylation → хроматин лимфоидных генов закрыт (10%)
+            let lymphoid_deficit = ((1.0 - damage.ciliary_function) * 0.55
+                + damage.protein_aggregates * 0.35
+                + damage.tubulin_hyperacetylation * 0.10).clamp(0.0, 1.0);
 
-            // Воспалительный индекс: произведение bias × дефицит × коэф.
-            let inflammaging_index = (myeloid_bias * lymphoid_deficit * 0.80).clamp(0.0, 1.0);
+            // Воспалительный индекс: взвешенная сумма miyeloid bias и lymphoid deficit
+            let inflammaging_index = (myeloid_bias * 0.60 + lymphoid_deficit * 0.40).clamp(0.0, 1.0);
 
             // Иммунное старение: вклад SASP и дефицита Т-/B-клеток
             let immune_senescence = (inflammaging_index * 0.70

@@ -347,7 +347,7 @@ pub enum PotencyLevel {
 }
 
 /// Параметры отщепления индукторов при O₂-воздействии (для панели управления)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct InducerDetachmentParams {
     /// Базовая вероятность отщепления на шаг при oxygen_level=1.0
     pub base_detach_probability: f32,
@@ -495,6 +495,10 @@ pub struct CentriolarDamageState {
     pub total_divisions: u32,
     /// Клетка вошла в сенесценцию?
     pub is_senescent: bool,
+    /// Порог total_damage_score для входа в сенесценцию.
+    /// Синхронизируется из `DamageParams::senescence_threshold` через `accumulate_damage()`.
+    /// По умолчанию: 0.75 (соответствует ~78 годам при нормальном старении).
+    pub senescence_threshold: f32,
 }
 
 impl CentriolarDamageState {
@@ -514,6 +518,7 @@ impl CentriolarDamageState {
             ros_level: 0.05,
             total_divisions: 0,
             is_senescent: false,
+            senescence_threshold: 0.75,
         }
     }
 
@@ -531,9 +536,10 @@ impl CentriolarDamageState {
         self.spindle_fidelity = (1.0 - structural_damage).max(0.0)
             * (1.0 - self.phosphorylation_dysregulation * 0.3);
 
-        // Сенесценция — когда суммарный ущерб превышает порог
+        // Сенесценция — когда суммарный ущерб превышает настраиваемый порог.
+        // Порог синхронизируется из DamageParams::senescence_threshold через accumulate_damage().
         let total_damage = self.total_damage_score();
-        if total_damage > 0.75 {
+        if total_damage > self.senescence_threshold {
             self.is_senescent = true;
         }
     }
@@ -838,6 +844,10 @@ pub struct EpigeneticClockState {
     /// Коэффициент ускорения часов (1.0 = норма; >1.0 = ускорены).
     /// `clock_acceleration = 1.0 + total_damage_score × 0.5`
     pub clock_acceleration: f32,
+    /// Вклад эпигенетического ускорения в ROS следующего шага [0..0.05].
+    /// Аналог `InflammagingState::ros_boost`, но от эпигенетических часов.
+    /// Читается в начале step() и передаётся в `accumulate_damage()` вместе с infl_ros_boost.
+    pub epi_ros_contribution: f32,
 }
 
 impl Default for EpigeneticClockState {
@@ -845,6 +855,7 @@ impl Default for EpigeneticClockState {
         Self {
             methylation_age: 0.0,
             clock_acceleration: 1.0,
+            epi_ros_contribution: 0.0,
         }
     }
 }
