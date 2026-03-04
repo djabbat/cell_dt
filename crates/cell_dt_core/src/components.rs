@@ -1058,3 +1058,67 @@ impl Default for ModulationState {
         }
     }
 }
+
+// ============================================================
+// Митохондриальное состояние (Трек E)
+// ============================================================
+
+/// ECS-компонент митохондриального здоровья (CDATA Трек E).
+///
+/// Митохондрии формируют кислородный щит вокруг центросомы.
+/// При дисфункции митохондрий (мутации мтДНК, фрагментация, избыток ROS)
+/// щит ослабевает → больше O₂ проникает к центриолям → ускоряется
+/// отщепление индукторов.
+///
+/// # Петли обратной связи
+/// 1. `mtdna_mutations ↑` → `ros_production ↑` → `mtdna_mutations ↑` (цикл)
+/// 2. `ros_production ↑` → `fusion_index ↓` (фрагментация) → митофагия менее эффективна
+/// 3. `ros_production ↑` → `ros_boost` → `CentriolarDamageState.ros_level ↑`
+///    (через `human_development_module`, лаг 1 шаг)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MitochondrialState {
+    /// Накопление мутаций мтДНК [0..1].
+    /// 0 = здоровый геном; 1 = критическая мутационная нагрузка.
+    pub mtdna_mutations: f32,
+    /// Индекс слияния митохондрий [0..1].
+    /// 1.0 = нитевидная сеть (молодые, здоровые);
+    /// 0.0 = полная фрагментация (стареющие).
+    pub fusion_index: f32,
+    /// Продукция ROS митохондриями [0..1].
+    /// 0.0 = нормальный уровень; 1.0 = критическая суперпродукция.
+    pub ros_production: f32,
+    /// Мембранный потенциал (ΔΨm) [0..1].
+    /// 1.0 = максимальный потенциал (молодые митохондрии);
+    /// снижается при дисфункции → митофагия через PINK1/Parkin теряет эффективность.
+    pub membrane_potential: f32,
+    /// Поток митофагии [0..1]: скорость очистки дисфункциональных митохондрий.
+    /// Снижается при низком `membrane_potential`.
+    pub mitophagy_flux: f32,
+    /// Вклад митохондрий в кислородный щит центросомы [0..1].
+    /// 1.0 = полный щит; 0.0 = щита нет.
+    pub mito_shield_contribution: f32,
+}
+
+impl Default for MitochondrialState {
+    fn default() -> Self {
+        Self {
+            mtdna_mutations: 0.0,
+            fusion_index: 1.0,
+            ros_production: 0.0,
+            membrane_potential: 1.0,
+            mitophagy_flux: 1.0,
+            mito_shield_contribution: 1.0,
+        }
+    }
+}
+
+impl MitochondrialState {
+    /// Создать молодое митохондриальное состояние (синоним `default()`).
+    pub fn pristine() -> Self { Self::default() }
+
+    /// Вычислить вклад в ROS-буст центриолярных повреждений.
+    /// Масштаб задаётся параметром `ros_production_boost`.
+    pub fn ros_boost(&self, ros_production_boost: f32) -> f32 {
+        self.ros_production * ros_production_boost
+    }
+}

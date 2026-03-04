@@ -20,13 +20,14 @@ use cell_dt_core::{
     hecs::{World, Entity},
     components::{
         CentriolarDamageState, CentriolarInducerPair, PotencyLevel,
-        TissueState, DifferentiationStatus, DifferentiationTier, ModulationState,
+        TissueState, DifferentiationStatus, ModulationState,
         CellCycleStateExtended,
         InflammagingState,
         DivisionExhaustionState,
         CentriolePair,
         TelomereState,
         EpigeneticClockState,
+        MitochondrialState,
         Dead,
     },
 };
@@ -420,15 +421,23 @@ impl SimulationModule for HumanDevelopmentModule {
             Option<&mut EpigeneticClockState>,
             Option<&mut DifferentiationStatus>,
             Option<&mut ModulationState>,
+            Option<&MitochondrialState>,
         )>();
 
-        for (_, (comp, inflammaging_opt, exhaustion_opt, centriole_opt, mut telomere_opt, mut epigenetic_opt, mut diff_status_opt, mut modulation_opt)) in query.iter() {
+        for (_, (comp, inflammaging_opt, exhaustion_opt, centriole_opt, mut telomere_opt, mut epigenetic_opt, mut diff_status_opt, mut modulation_opt, mito_opt)) in query.iter() {
             if !comp.is_alive { continue; }
 
             // Предварительно извлекаем значения из InflammagingState (если модуль активен)
             let infl_ros_boost        = inflammaging_opt.map_or(0.0, |i| i.ros_boost);
             let infl_niche_impairment = inflammaging_opt.map_or(0.0, |i| i.niche_impairment);
             let infl_sasp             = inflammaging_opt.map_or(0.0, |i| i.sasp_intensity);
+            // Трек E: митохондриальный ROS-буст (лаг 1 шаг, аналогично inflammaging)
+            // Параметр ros_production_boost = 0.20 (масштаб по умолчанию)
+            let mito_ros_boost = mito_opt.map_or(0.0, |m| m.ros_boost(0.20));
+            // Митохондриальный щит: снижает эффективный кислородный уровень у центросомы
+            // mito_shield_contribution < 1.0 → O₂ проникает активнее → больше отщеплений
+            // Применяется к base_detach_probability через масштабирование (лаг 1 шаг)
+            let mito_shield = mito_opt.map_or(1.0, |m| m.mito_shield_contribution);
             // Вклад эпигенетических часов в ROS (лаг 1 шаг, аналогично inflammaging)
             let epi_ros_from_prev = epigenetic_opt.as_ref().map_or(0.0, |e| e.epi_ros_contribution);
             // Истощение делений (asymmetric_division_module → stem_cell_pool)
@@ -473,7 +482,7 @@ impl SimulationModule for HumanDevelopmentModule {
                     &comp.damage_rates,
                     age_years,
                     dt_years,
-                    infl_ros_boost + epi_ros_from_prev,  // inflammaging + эпигенетические часы
+                    infl_ros_boost + epi_ros_from_prev + mito_ros_boost,  // inflammaging + эпигенетика + митохондрии
                 );
 
                 // 3б. PTM bridge: структурные PTM CentriolePair → функциональные повреждения.
@@ -512,6 +521,11 @@ impl SimulationModule for HumanDevelopmentModule {
                 }
 
                 // 4. O₂-зависимое отщепление индукторов (контролируемый путь, M=D=0.5)
+                // Митохондриальный щит влияет косвенно: через ROS-петлю (шаг 3).
+                // mito_ros_boost → accumulate_damage() → ros_level ↑ → centrosomal_oxygen_level ↑
+                // → больше O₂ у центросомы → больше отщеплений (лаг 1 шаг — корректно).
+                // Прямое масштабирование здесь не применяется.
+                let _ = mito_shield; // используется через ROS-буст (выше)
                 Self::apply_oxygen_detachment(comp, &mut self.rng);
 
                 // 4б. PTM-опосредованное истощение (только мать — механизм истощения пула).

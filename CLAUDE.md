@@ -29,6 +29,7 @@ cell_dt_modules/
   stem_cell_hierarchy_module   ← иерархия потентности (синхр. с CDA)
   human_development_module     ← ядро CDATA: повреждения → ткань → смерть
   myeloid_shift_module         ← миелоидный сдвиг + InflammagingState обратная связь
+  mitochondrial_module         ← Трек E: мтДНК мутации, ROS-продукция, митофагия, mito_shield
 examples                       ← бинарные примеры
 ```
 

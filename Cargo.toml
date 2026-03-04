@@ -14,6 +14,7 @@ members = [
     "crates/cell_dt_modules/stem_cell_hierarchy_module",
     "crates/cell_dt_modules/human_development_module",
     "crates/cell_dt_modules/myeloid_shift_module",
+    "crates/cell_dt_modules/mitochondrial_module",
     "examples",
 ]
 

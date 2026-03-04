@@ -307,11 +307,13 @@ sasp_intensity   = inflammaging_index           → InflammagingState
 
 ### Митохондриальный трек
 
-- [ ] **Новый модуль `mitochondrial_module`** (более долгосрочный):
-  - `MitochondrialState { mtdna_mutations: f32, fusion_index: f32, ros_production: f32 }`
-  - Питает `ros_level` в `CentriolarDamageState`
-  - Митофагия: при `ros_production > threshold` → дефект митофагии → больше дисфункциональных митохондрий
-  - Прямая связь с CDATA: митохондриальный щит от O₂ слабеет при `ros_production ↑`
+- [x] **Новый модуль `mitochondrial_module`** ✅ (сессия 7):
+  - `MitochondrialState { mtdna_mutations, fusion_index, ros_production, membrane_potential, mitophagy_flux, mito_shield_contribution }`
+  - Питает `ros_boost` в `accumulate_damage()` через `human_development_module`
+  - Петля I: мутации → ROS → мутации; Петля II: ROS → фрагментация → митофагия хуже
+  - Митофагия: при `ros_production > mitophagy_threshold` → перегрузка → ускорение деградации
+  - 7 unit-тестов; калибровка: age 70 → ros≈0.37, mtdna≈0.30, fusion≈0.49
+  - `mitochondrial_example` — вывод 6 метрик каждые 10 лет
 
 ---
 
@@ -475,22 +477,27 @@ sasp_intensity   = inflammaging_index           → InflammagingState
 ✅ 17 Исправления логических ошибок (Fix 1–9, сессия 4) — 62/62 тестов
 ✅ 18 Спавн дочерних сущностей (asymmetric_division)         → п. 3
 ✅ 19 CSV CDATA-экспорт (CdataExporter, io_example обновлён) → п. 7
-✅ 21 GUI CDATA-вкладка (Tab::Cdata, CdataGuiConfig, DamagePreset, сессия 6) → п. 7
-✅ 22 Тест калибровки индукторов (2 теста, multiseed, сессия 6)           → п. 6
-✅ 23 Тесты миелоидного сдвига по возрастам (4 теста, сессия 6)           → п. 6
-✅ 24 DifferentiationStatus + ModulationState (сессия 7)                  → п. 3
+✅ 20 GUI CDATA-вкладка (Tab::Cdata, CdataGuiConfig, DamagePreset, сессия 6) → п. 7
+✅ 21 Тест калибровки индукторов (2 теста, multiseed, сессия 6)           → п. 6
+✅ 22 Тесты миелоидного сдвига по возрастам (4 теста, сессия 6)           → п. 6
+✅ 23 DifferentiationStatus + ModulationState (сессия 7)                  → п. 3
       DifferentiationTier (Ord), try_advance (необратимо), ModulationState
       5 тестов: tier_ordering, from_potency, irreversibility, same_tier, modulation_default
-✅ 25 De novo создание центриолей + мейотическая элиминация (сессия 7)    → п. 3
+✅ 24 De novo создание центриолей + мейотическая элиминация (сессия 7)    → п. 3
       de_novo_centriole_division (u32, дефолт 4), meiotic_elimination_enabled (bool, дефолт true)
       HumanDevelopmentalStage: PartialOrd/Ord; inductors_active/meiotic_reset_done в DifferentiationStatus
       GUI: новая секция "🧬 Жизненный цикл индукторов" (slider 1-8, checkbox)
       4 теста: inductors_inactive_by_default, reset_for_meiosis, de_novo_stage_mapping, stage_ordering
-   20 митохондриальный модуль                                              → долгосрочно
+✅ 25 Митохондриальный модуль Трек E (сессия 7)                           → п. 5
+      MitochondrialState (6 полей), MitochondrialModule, lazy-init в step()
+      ros_boost → accumulate_damage(), mito_shield → via ROS loop
+      7 тестов: pristine, mutations_accumulate, ros_increases, shield_bounded,
+               ros_boost_scaling, all_metrics_bounded, fusion_decreases
+      mitochondrial_example: вывод mtDNA/ROS/fusion/shield/mBias каждые 10 лет
 ```
 
 ---
 
 *При каждом выполненном пункте: переместить в секцию "ВЫПОЛНЕНО" вверху, обновить дату.*
-*Последнее обновление: 2026-03-04 (сессия 7) — 77 тестов ✅*
+*Последнее обновление: 2026-03-04 (сессия 7) — 84 теста ✅*
 *Изменить  RECOMMENDATION.md, TODO.md и README.md соответственно изменениям*

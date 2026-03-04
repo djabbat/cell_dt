@@ -1,6 +1,5 @@
 //! Ткани и органы человека
 
-use serde::{Deserialize, Serialize};
 
 /// Псевдоним для [`cell_dt_core::components::TissueType`].
 ///
