@@ -67,3 +67,7 @@ path = "src/bin/human_development_example.rs"
 [[bin]]
 name = "myeloid_shift_example"
 path = "src/bin/myeloid_shift_example.rs"
+
+[[bin]]
+name = "cdata_viz_example"
+path = "src/bin/cdata_viz_example.rs"

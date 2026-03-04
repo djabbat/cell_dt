@@ -27,7 +27,7 @@ use cell_dt_core::{
     hecs::World,
 };
 use serde_json::{json, Value};
-use log::{info, debug, trace};
+use log::{info, trace};
 
 /// Параметры модуля клеточного цикла
 #[derive(Debug, Clone)]

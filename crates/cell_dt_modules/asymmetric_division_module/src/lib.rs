@@ -20,7 +20,7 @@ use cell_dt_core::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use log::{info, debug, trace, warn};
+use log::{info, trace, warn};
 use std::collections::HashMap;
 
 /// Тип деления стволовой клетки

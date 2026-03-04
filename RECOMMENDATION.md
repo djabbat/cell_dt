@@ -369,19 +369,24 @@ sasp_intensity   = inflammaging_index           → InflammagingState
   - `io_example.rs` обновлён: демонстрирует `DataExporter` (базовые данные) + `CdataExporter` (CDATA)
   - `DataExporter::buffered()` — добавлен метод проверки размера буфера
 
-- [ ] **Визуализация через `cell_dt_viz`** — добавить:
-  - Временной ряд: `damage_score`, `myeloid_bias`, `spindle_fidelity`, `frailty` по оси времени
-  - Стрелки трека A и трека B с текущими значениями в режиме реального времени
+- [x] **Визуализация через `cell_dt_viz`** ✅ (сессия 5):
+  - `CdataSnapshot` — агрегированные метрики всех живых ниш за один шаг
+  - `CdataTimeSeriesVisualizer` — 4-панельный PNG-график (damage, myeloid_bias, spindle, frailty) по оси времени (лет)
+  - `cdata_viz_example.rs` — демо: 1200 шагов ≈ 100 лет, 5 тканей, снимок каждый год
 
 - [ ] **Python bindings `cell_dt_python`** — экспортировать:
   - `HumanDevelopmentComponent` как PyClass
   - `MyeloidShiftComponent` как PyClass
   - Функцию `run_simulation(params_dict) -> polars.DataFrame`
 
-- [ ] **`cell_dt_gui` — панель управления** — добавить слайдеры для:
-  - `base_detach_probability`, `mother_bias`, `age_bias_coefficient`
-  - `spindle_weight`, `cilia_weight` (мелоидный сдвиг)
-  - `DamageParams` преключатель: normal / progeria / longevity
+- [x] **`cell_dt_gui` — панель управления** ✅ (сессия 6):
+  - Вкладка `Tab::Cdata` ("🔴 CDATA / Aging") добавлена в навигацию
+  - `CdataGuiConfig` + `DamagePreset` — новые типы конфигурации
+  - Слайдеры: `base_detach_probability`, `mother_bias`, `age_bias_coefficient`
+  - Слайдеры: `spindle_weight`, `cilia_weight`, `ros_weight`, `aggregate_weight`
+  - ComboBox: Normal / Progeria (×5) / Longevity (×0.6)
+  - Индикатор суммы весов (Σ, цветовая метка)
+  - Коллапсируемые блоки со справкой по путям A/B/C
 
 ---
 
@@ -463,6 +468,7 @@ sasp_intensity   = inflammaging_index           → InflammagingState
 ✅ 17 Исправления логических ошибок (Fix 1–9, сессия 4) — 62/62 тестов
 ✅ 18 Спавн дочерних сущностей (asymmetric_division)         → п. 3
 ✅ 19 CSV CDATA-экспорт (CdataExporter, io_example обновлён) → п. 7
+✅ 21 GUI CDATA-вкладка (Tab::Cdata, CdataGuiConfig, DamagePreset, сессия 6) → п. 7
    20 митохондриальный модуль                                 → долгосрочно
 ```
 

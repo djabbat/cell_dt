@@ -26,6 +26,7 @@ pub struct ConfigAppState {
     pub stem_hierarchy: StemHierarchyConfig,
     pub io: IOConfig,
     pub viz: VisualizationConfig,
+    pub cdata: CdataGuiConfig,
     
     // UI state
     pub selected_tab: Tab,
@@ -60,6 +61,7 @@ impl Default for ConfigAppState {
             stem_hierarchy: StemHierarchyConfig::default(),
             io: IOConfig::default(),
             viz: VisualizationConfig::default(),
+            cdata: CdataGuiConfig::default(),
             selected_tab: Tab::Simulation,
             show_save_dialog: false,
             show_load_dialog: false,
@@ -462,6 +464,7 @@ pub enum Tab {
     StemHierarchy,
     IO,
     Visualization,
+    Cdata,
 }
 
 impl Tab {
@@ -475,6 +478,56 @@ impl Tab {
             Tab::StemHierarchy => "🌱 Stem Hierarchy",
             Tab::IO => "💾 I/O",
             Tab::Visualization => "📊 Visualization",
+            Tab::Cdata => "🔴 CDATA / Aging",
+        }
+    }
+}
+
+/// Конфигурация CDATA-параметров для GUI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CdataGuiConfig {
+    // --- Система индукторов ---
+    pub base_detach_probability: f32,
+    pub mother_bias: f32,
+    pub age_bias_coefficient: f32,
+    // --- Миелоидный сдвиг ---
+    pub spindle_weight: f32,
+    pub cilia_weight: f32,
+    pub ros_weight: f32,
+    pub aggregate_weight: f32,
+    /// Пресет скоростей повреждений
+    pub damage_preset: DamagePreset,
+}
+
+/// Пресет DamageParams
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DamagePreset {
+    Normal,
+    Progeria,
+    Longevity,
+}
+
+impl DamagePreset {
+    pub fn label(&self) -> &'static str {
+        match self {
+            DamagePreset::Normal   => "Normal aging",
+            DamagePreset::Progeria => "Progeria (×5 rates)",
+            DamagePreset::Longevity => "Longevity (×0.6 rates)",
+        }
+    }
+}
+
+impl Default for CdataGuiConfig {
+    fn default() -> Self {
+        Self {
+            base_detach_probability: 0.002,
+            mother_bias: 0.6,
+            age_bias_coefficient: 0.003,
+            spindle_weight: 0.45,
+            cilia_weight: 0.30,
+            ros_weight: 0.15,
+            aggregate_weight: 0.10,
+            damage_preset: DamagePreset::Normal,
         }
     }
 }
@@ -682,6 +735,7 @@ impl eframe::App for ConfigApp {
                     Tab::StemHierarchy,
                     Tab::IO,
                     Tab::Visualization,
+                    Tab::Cdata,
                 ];
                 
                 for tab in tabs {
@@ -745,6 +799,7 @@ impl eframe::App for ConfigApp {
                     Tab::StemHierarchy => self.show_stem_hierarchy_tab(ui),
                     Tab::IO => self.show_io_tab(ui),
                     Tab::Visualization => self.show_visualization_tab(ui),
+                    Tab::Cdata => self.show_cdata_tab(ui),
                 }
             });
         });
@@ -1155,8 +1210,156 @@ impl ConfigApp {
         }
     }
     
+    fn show_cdata_tab(&mut self, ui: &mut egui::Ui) {
+        ui.heading("🔴 CDATA / Aging — параметры теории CDATA");
+        ui.separator();
+
+        // --- Inducer system ---
+        ui.collapsing("🔬 Система индукторов", |ui| {
+            ui.horizontal(|ui| {
+                ui.label("base_detach_probability:")
+                  .on_hover_text("Базовая вероятность отщепления индуктора за шаг (O₂-зависимо)");
+                if ui.add(
+                    Slider::new(&mut self.state.cdata.base_detach_probability, 0.0..=0.01)
+                        .logarithmic(true)
+                        .suffix("")
+                ).changed() {
+                    self.state.push_history();
+                }
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("mother_bias:")
+                  .on_hover_text("Доля отщеплений, приходящаяся на материнскую центриоль (0 = равно, 1 = только M)");
+                if ui.add(
+                    Slider::new(&mut self.state.cdata.mother_bias, 0.0..=1.0)
+                ).changed() {
+                    self.state.push_history();
+                }
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("age_bias_coefficient:")
+                  .on_hover_text("На сколько возраст усиливает mother_bias за год");
+                if ui.add(
+                    Slider::new(&mut self.state.cdata.age_bias_coefficient, 0.0..=0.01)
+                        .logarithmic(true)
+                ).changed() {
+                    self.state.push_history();
+                }
+            });
+        });
+
+        ui.add_space(4.0);
+
+        // --- Myeloid shift weights ---
+        ui.collapsing("🩸 Миелоидный сдвиг (веса)", |ui| {
+            ui.label("Сумма весов должна быть ≈ 1.0 для корректного масштабирования myeloid_bias.");
+
+            ui.horizontal(|ui| {
+                ui.label("spindle_weight:")
+                  .on_hover_text("Вклад потери spindle_fidelity в myeloid_bias");
+                if ui.add(Slider::new(&mut self.state.cdata.spindle_weight, 0.0..=1.0)).changed() {
+                    self.state.push_history();
+                }
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("cilia_weight:")
+                  .on_hover_text("Вклад потери ciliary_function в myeloid_bias");
+                if ui.add(Slider::new(&mut self.state.cdata.cilia_weight, 0.0..=1.0)).changed() {
+                    self.state.push_history();
+                }
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("ros_weight:")
+                  .on_hover_text("Вклад ros_level в myeloid_bias");
+                if ui.add(Slider::new(&mut self.state.cdata.ros_weight, 0.0..=1.0)).changed() {
+                    self.state.push_history();
+                }
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("aggregate_weight:")
+                  .on_hover_text("Вклад protein_aggregates в myeloid_bias");
+                if ui.add(Slider::new(&mut self.state.cdata.aggregate_weight, 0.0..=1.0)).changed() {
+                    self.state.push_history();
+                }
+            });
+
+            let total = self.state.cdata.spindle_weight
+                + self.state.cdata.cilia_weight
+                + self.state.cdata.ros_weight
+                + self.state.cdata.aggregate_weight;
+            let color = if (total - 1.0).abs() < 0.05 {
+                egui::Color32::GREEN
+            } else {
+                egui::Color32::YELLOW
+            };
+            ui.colored_label(color, format!("Σ = {:.2} (цель: 1.00)", total));
+        });
+
+        ui.add_space(4.0);
+
+        // --- Damage preset ---
+        ui.collapsing("⚡ Пресет скоростей повреждений", |ui| {
+            ui.label("Выбор предустановки масштабирует все скорости повреждений в DamageParams.");
+
+            let current_label = self.state.cdata.damage_preset.label();
+            ComboBox::from_label("Пресет")
+                .selected_text(current_label)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_value(
+                        &mut self.state.cdata.damage_preset,
+                        DamagePreset::Normal,
+                        DamagePreset::Normal.label(),
+                    ).clicked() {
+                        self.state.push_history();
+                    }
+                    if ui.selectable_value(
+                        &mut self.state.cdata.damage_preset,
+                        DamagePreset::Progeria,
+                        DamagePreset::Progeria.label(),
+                    ).clicked() {
+                        self.state.push_history();
+                    }
+                    if ui.selectable_value(
+                        &mut self.state.cdata.damage_preset,
+                        DamagePreset::Longevity,
+                        DamagePreset::Longevity.label(),
+                    ).clicked() {
+                        self.state.push_history();
+                    }
+                });
+
+            match self.state.cdata.damage_preset {
+                DamagePreset::Normal =>
+                    ui.label("Стандартные скорости. Ожидаемая продолжительность жизни ≈ 78 лет."),
+                DamagePreset::Progeria =>
+                    ui.label("Скорости ×5. Ускоренное старение (синдром Хатчинсона-Гилфорда)."),
+                DamagePreset::Longevity =>
+                    ui.label("Скорости ×0.6. Замедленное накопление повреждений → долгожительство."),
+            };
+        });
+
+        ui.add_space(4.0);
+
+        // --- Info block ---
+        ui.collapsing("ℹ️ Справка по CDATA", |ui| {
+            ui.label("Теория накопления центриолярных повреждений (Jaba Tkemaladze).");
+            ui.add_space(2.0);
+            ui.label("Пути старения:");
+            ui.label("  A — Цилии: CEP164↓ → Shh/Wnt↓ → нет самообновления ниши");
+            ui.label("  B — Веретено: spindle_fidelity↓ → симм. деление → истощение пула");
+            ui.label("  C — Миелоид: spindle↓ + cilia↓ + ROS↑ → PU.1 > Ikaros → воспаление");
+            ui.add_space(2.0);
+            ui.label("Порог сенесценции: total_damage > 0.75 → смерть ниши ≈ 78 лет.");
+        });
+    }
+
     // ==================== DIALOGS ====================
-    
+
     fn show_save_dialog(&mut self, ctx: &Context) {
         let mut open = true;
         Window::new("💾 Save Configuration")

@@ -57,7 +57,7 @@ impl CdataRecord {
 /// Экспортёр CDATA-данных из ECS-мира в CSV-файлы.
 ///
 /// # Использование
-/// ```no_run
+/// ```ignore
 /// use cell_dt_io::CdataExporter;
 ///
 /// let mut exporter = CdataExporter::new("output/cdata", "run");

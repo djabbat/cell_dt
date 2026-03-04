@@ -32,7 +32,7 @@ use cell_dt_core::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use log::{info, debug, warn, trace};
+use log::{info, warn, trace};
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 use std::collections::VecDeque;

@@ -5,11 +5,13 @@ mod plot2d;
 mod plot3d;
 mod heatmap;
 mod timeseries;
+mod cdata_timeseries;
 
 pub use plot2d::*;
 pub use plot3d::*;
 pub use heatmap::*;
 pub use timeseries::*;
+pub use cdata_timeseries::{CdataSnapshot, CdataTimeSeriesVisualizer};
 
 use cell_dt_core::{
     components::{CentriolePair, CellCycleState, Phase},

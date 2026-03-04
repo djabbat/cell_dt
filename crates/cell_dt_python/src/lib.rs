@@ -11,6 +11,8 @@ use cell_dt_core::{
 use centriole_module::CentrioleModule;
 use cell_cycle_module::{CellCycleModule, CellCycleParams};
 use transcriptome_module::{TranscriptomeModule, TranscriptomeParams};
+use human_development_module::{HumanDevelopmentModule, HumanDevelopmentComponent, HumanTissueType};
+use myeloid_shift_module::{MyeloidShiftModule, MyeloidShiftComponent};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict};
 use numpy::{PyArray1, PyArray2};
@@ -25,11 +27,16 @@ fn cell_dt(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyCellCycleData>()?;
     m.add_class::<PyTranscriptomeData>()?;
     m.add_class::<PyCellCycleParams>()?;
-    
+    // CDATA-биндинги
+    m.add_class::<PyCdataSimulation>()?;
+    m.add_class::<PyHumanDevelopmentData>()?;
+    m.add_class::<PyMyeloidShiftData>()?;
+
     m.add_function(wrap_pyfunction!(run_simulation, m)?)?;
     m.add_function(wrap_pyfunction!(create_cell_population, m)?)?;
     m.add_function(wrap_pyfunction!(analyze_transcriptome, m)?)?;
-    
+    m.add_function(wrap_pyfunction!(run_cdata_simulation, m)?)?;
+
     Ok(())
 }
 
@@ -494,4 +501,245 @@ pub fn analyze_transcriptome(cell_data: Vec<PyCellData>) -> PyResult<HashMap<Str
     }
     
     Ok(stats)
+}
+
+// ============================================================
+// CDATA биндинги
+// ============================================================
+
+/// Снимок состояния одной стволовой ниши для Python.
+#[pyclass]
+#[derive(Debug, Clone)]
+pub struct PyHumanDevelopmentData {
+    #[pyo3(get)] pub entity_id: u64,
+    #[pyo3(get)] pub tissue: String,
+    #[pyo3(get)] pub stage: String,
+    #[pyo3(get)] pub age_years: f64,
+    #[pyo3(get)] pub damage_score: f32,
+    #[pyo3(get)] pub spindle_fidelity: f32,
+    #[pyo3(get)] pub ciliary_function: f32,
+    #[pyo3(get)] pub frailty: f32,
+    #[pyo3(get)] pub m_inducers: u32,
+    #[pyo3(get)] pub d_inducers: u32,
+    #[pyo3(get)] pub potency: String,
+    #[pyo3(get)] pub is_alive: bool,
+    #[pyo3(get)] pub phenotype_count: usize,
+}
+
+/// Снимок миелоидного сдвига для Python.
+#[pyclass]
+#[derive(Debug, Clone)]
+pub struct PyMyeloidShiftData {
+    #[pyo3(get)] pub entity_id: u64,
+    #[pyo3(get)] pub myeloid_bias: f32,
+    #[pyo3(get)] pub lymphoid_deficit: f32,
+    #[pyo3(get)] pub inflammaging_index: f32,
+    #[pyo3(get)] pub immune_senescence: f32,
+    #[pyo3(get)] pub phenotype: String,
+}
+
+/// Python-класс для CDATA-симуляции (human_development + myeloid_shift).
+///
+/// Пример из Python:
+/// ```python
+/// sim = cell_dt.PyCdataSimulation(max_steps=1200, dt=1/12.0, seed=42)
+/// sim.add_tissue("Blood")
+/// sim.add_tissue("Neural")
+/// sim.run()
+/// data = sim.get_cdata_data()
+/// for d in data:
+///     print(f"tissue={d.tissue} age={d.age_years:.1f} damage={d.damage_score:.3f}")
+/// ```
+#[pyclass]
+pub struct PyCdataSimulation {
+    sim: SimulationManager,
+}
+
+#[pymethods]
+impl PyCdataSimulation {
+    #[new]
+    #[pyo3(signature = (max_steps = 1200, dt = 0.083333, seed = None))]
+    pub fn new(max_steps: u64, dt: f64, seed: Option<u64>) -> PyResult<Self> {
+        let config = SimulationConfig {
+            max_steps,
+            dt,
+            checkpoint_interval: 100,
+            num_threads: None,
+            seed,
+            parallel_modules: false,
+            cleanup_dead_interval: Some(500),
+        };
+        let mut sim = SimulationManager::new(config);
+        sim.register_module(Box::new(CentrioleModule::new()))
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        sim.register_module(Box::new(CellCycleModule::new()))
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        sim.register_module(Box::new(HumanDevelopmentModule::new()))
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        sim.register_module(Box::new(MyeloidShiftModule::new()))
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        Ok(Self { sim })
+    }
+
+    /// Добавить стволовую нишу заданной ткани.
+    /// `tissue`: "Blood" | "Neural" | "Epithelial" | "Muscle" | "Skin" | "Liver" | "Kidney" | "Lung" | "Heart"
+    pub fn add_tissue(&mut self, tissue: &str) -> PyResult<()> {
+        let tissue_type = match tissue {
+            "Blood"      => HumanTissueType::Blood,
+            "Neural"     => HumanTissueType::Neural,
+            "Muscle"     => HumanTissueType::Muscle,
+            "Skin"       => HumanTissueType::Skin,
+            "Liver"      => HumanTissueType::Liver,
+            "Kidney"     => HumanTissueType::Kidney,
+            "Lung"       => HumanTissueType::Lung,
+            "Heart"      => HumanTissueType::Heart,
+            _            => HumanTissueType::Epithelial,
+        };
+        let world = self.sim.world_mut();
+        world.spawn((
+            CellCycleStateExtended::new(),
+            HumanDevelopmentComponent::for_tissue(tissue_type),
+        ));
+        Ok(())
+    }
+
+    /// Инициализировать и запустить симуляцию полностью.
+    pub fn run(&mut self) -> PyResult<()> {
+        self.sim.initialize()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        self.sim.run()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
+    /// Выполнить N шагов (после `initialize()`).
+    pub fn step(&mut self, steps: u64) -> PyResult<()> {
+        for _ in 0..steps {
+            self.sim.step()
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Инициализировать модули (вызвать перед `step()`).
+    pub fn initialize(&mut self) -> PyResult<()> {
+        self.sim.initialize()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
+    /// Текущий шаг симуляции.
+    pub fn current_step(&self) -> u64 { self.sim.current_step() }
+
+    /// Текущее время (в единицах dt).
+    pub fn current_time(&self) -> f64 { self.sim.current_time() }
+
+    /// Получить CDATA-данные всех ниш.
+    pub fn get_cdata_data(&self) -> Vec<PyHumanDevelopmentData> {
+        let world = self.sim.world();
+        world.query::<&HumanDevelopmentComponent>()
+            .iter()
+            .map(|(entity, comp)| PyHumanDevelopmentData {
+                entity_id:       entity.to_bits().get(),
+                tissue:          format!("{:?}", comp.tissue_type),
+                stage:           format!("{:?}", comp.stage),
+                age_years:       comp.age_years(),
+                damage_score:    comp.damage_score(),
+                spindle_fidelity: comp.centriolar_damage.spindle_fidelity,
+                ciliary_function: comp.centriolar_damage.ciliary_function,
+                frailty:         comp.frailty(),
+                m_inducers:      comp.inducers.mother_set.remaining,
+                d_inducers:      comp.inducers.daughter_set.remaining,
+                potency:         format!("{:?}", comp.potency()),
+                is_alive:        comp.is_alive,
+                phenotype_count: comp.active_phenotypes.len(),
+            })
+            .collect()
+    }
+
+    /// Получить данные миелоидного сдвига всех ниш.
+    pub fn get_myeloid_data(&self) -> Vec<PyMyeloidShiftData> {
+        let world = self.sim.world();
+        world.query::<&MyeloidShiftComponent>()
+            .iter()
+            .map(|(entity, m)| PyMyeloidShiftData {
+                entity_id:        entity.to_bits().get(),
+                myeloid_bias:     m.myeloid_bias,
+                lymphoid_deficit: m.lymphoid_deficit,
+                inflammaging_index: m.inflammaging_index,
+                immune_senescence:  m.immune_senescence,
+                phenotype:        format!("{:?}", m.phenotype),
+            })
+            .collect()
+    }
+}
+
+/// Быстрый запуск CDATA-симуляции из Python.
+/// Возвращает список словарей — по одному на каждую нишу.
+///
+/// Пример из Python:
+/// ```python
+/// rows = cell_dt.run_cdata_simulation(
+///     tissues=["Blood", "Neural", "Muscle"],
+///     steps=1200,
+///     dt=1/12.0,
+///     seed=42,
+/// )
+/// import pandas as pd
+/// df = pd.DataFrame(rows)
+/// print(df)
+/// ```
+#[pyfunction]
+#[pyo3(signature = (
+    tissues = None,
+    steps = 1200,
+    dt = 0.083333,
+    seed = None,
+))]
+pub fn run_cdata_simulation(
+    py: Python,
+    tissues: Option<Vec<String>>,
+    steps: u64,
+    dt: f64,
+    seed: Option<u64>,
+) -> PyResult<Vec<Py<PyDict>>> {
+    let mut sim = PyCdataSimulation::new(steps, dt, seed)?;
+
+    let tissue_list = tissues.unwrap_or_else(|| {
+        vec!["Blood".into(), "Neural".into(), "Epithelial".into(),
+             "Muscle".into(), "Skin".into()]
+    });
+    for t in &tissue_list {
+        sim.add_tissue(t)?;
+    }
+    sim.run()?;
+
+    let cdata = sim.get_cdata_data();
+    let myeloid: HashMap<u64, PyMyeloidShiftData> = sim.get_myeloid_data()
+        .into_iter().map(|m| (m.entity_id, m)).collect();
+
+    let mut result = Vec::new();
+    for d in cdata {
+        let dict = PyDict::new(py);
+        dict.set_item("entity_id",       d.entity_id)?;
+        dict.set_item("tissue",          d.tissue.clone())?;
+        dict.set_item("stage",           d.stage.clone())?;
+        dict.set_item("age_years",       d.age_years)?;
+        dict.set_item("damage_score",    d.damage_score)?;
+        dict.set_item("spindle_fidelity", d.spindle_fidelity)?;
+        dict.set_item("ciliary_function", d.ciliary_function)?;
+        dict.set_item("frailty",         d.frailty)?;
+        dict.set_item("m_inducers",      d.m_inducers)?;
+        dict.set_item("d_inducers",      d.d_inducers)?;
+        dict.set_item("potency",         d.potency.clone())?;
+        dict.set_item("is_alive",        d.is_alive)?;
+        dict.set_item("phenotype_count", d.phenotype_count)?;
+        if let Some(m) = myeloid.get(&d.entity_id) {
+            dict.set_item("myeloid_bias",       m.myeloid_bias)?;
+            dict.set_item("inflammaging_index", m.inflammaging_index)?;
+        } else {
+            dict.set_item("myeloid_bias",       0.0f32)?;
+            dict.set_item("inflammaging_index", 0.0f32)?;
+        }
+        result.push(dict.into());
+    }
+    Ok(result)
 }
