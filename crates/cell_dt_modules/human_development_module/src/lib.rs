@@ -495,6 +495,23 @@ impl SimulationModule for HumanDevelopmentModule {
                     infl_ros_boost + epi_ros_from_prev + mito_ros_boost,  // inflammaging + эпигенетика + митохондрии
                 );
 
+                // 3а. P3: Ланжевен-шум молекулярных повреждений (noise_scale > 0).
+                // Применяется ПОСЛЕ детерминированного шага — сохраняет среднюю траекторию.
+                // sqrt(dt_years) — масштабирование Ито для временного шага.
+                if comp.damage_rates.noise_scale > 0.0 {
+                    let sigma = comp.damage_rates.noise_scale * dt_years.sqrt();
+                    let dam = &mut comp.centriolar_damage;
+                    dam.protein_carbonylation = (dam.protein_carbonylation
+                        + self.rng.gen::<f32>() * sigma * 2.0 - sigma).clamp(0.0, 1.0);
+                    dam.tubulin_hyperacetylation = (dam.tubulin_hyperacetylation
+                        + self.rng.gen::<f32>() * sigma * 2.0 - sigma).clamp(0.0, 1.0);
+                    dam.protein_aggregates = (dam.protein_aggregates
+                        + self.rng.gen::<f32>() * sigma * 2.0 - sigma).clamp(0.0, 1.0);
+                    dam.phosphorylation_dysregulation = (dam.phosphorylation_dysregulation
+                        + self.rng.gen::<f32>() * sigma * 2.0 - sigma).clamp(0.0, 1.0);
+                    dam.update_functional_metrics();
+                }
+
                 // 3б. PTM bridge: структурные PTM CentriolePair → функциональные повреждения.
                 // Лаг один шаг (centriole_module запускается до human_development_module).
                 // Масштаб 0.002/год при PTM=1.0, не пересекается с базовой скоростью acetylation_rate
@@ -515,6 +532,19 @@ impl SimulationModule for HumanDevelopmentModule {
                     if ptm_acetylation + ptm_oxidation + ptm_phospho > 0.0 {
                         dam.update_functional_metrics();
                     }
+                }
+
+                // 3в. P5: Репарация дистальных придатков (если включена в DamageParams).
+                // Вызывается после PTM bridge. mitophagy_flux усиливает репарацию через
+                // связь PINK1/Parkin → снижение локального ROS → восстановление CEP164/CEP89.
+                {
+                    let mitophagy_flux = mito_opt.map_or(0.0, |m| m.mitophagy_flux);
+                    damage::apply_appendage_repair(
+                        &mut comp.centriolar_damage,
+                        &comp.damage_rates,
+                        mitophagy_flux,
+                        dt_years,
+                    );
                 }
 
                 // Проверка на биологически нереалистичные значения
@@ -817,6 +847,17 @@ impl SimulationModule for HumanDevelopmentModule {
             "cep89_loss_rate":              self.damage_rates.cep89_loss_rate,
             "ninein_loss_rate":             self.damage_rates.ninein_loss_rate,
             "cep170_loss_rate":             self.damage_rates.cep170_loss_rate,
+            // P5: Репарация придатков
+            "cep164_repair_rate":                   self.damage_rates.cep164_repair_rate,
+            "cep89_repair_rate":                    self.damage_rates.cep89_repair_rate,
+            "ninein_repair_rate":                   self.damage_rates.ninein_repair_rate,
+            "cep170_repair_rate":                   self.damage_rates.cep170_repair_rate,
+            "appendage_repair_mitophagy_coupling":  self.damage_rates.appendage_repair_mitophagy_coupling,
+            // P4: Сигмоидный переход среднего возраста
+            "midlife_transition_center":  self.damage_rates.midlife_transition_center,
+            "midlife_transition_width":   self.damage_rates.midlife_transition_width,
+            // P3: Стохастический шум
+            "noise_scale":                self.damage_rates.noise_scale,
             // Служебное
             "step_count":              self.step_count,
         })
@@ -867,9 +908,10 @@ impl SimulationModule for HumanDevelopmentModule {
         // DamageParams: preset (заменяет все значения сразу)
         if let Some(preset) = params.get("damage_preset").and_then(|v| v.as_str()) {
             self.damage_rates = match preset {
-                "progeria"  => DamageParams::progeria(),
-                "longevity" => DamageParams::longevity(),
-                _           => DamageParams::normal_aging(),
+                "progeria"    => DamageParams::progeria(),
+                "longevity"   => DamageParams::longevity(),
+                "antioxidant" => DamageParams::antioxidant(),
+                _             => DamageParams::normal_aging(),
             };
             self.damage_rates_dirty = true;
         }
@@ -895,6 +937,17 @@ impl SimulationModule for HumanDevelopmentModule {
         set_dr!("cep89_loss_rate",            self.damage_rates.cep89_loss_rate);
         set_dr!("ninein_loss_rate",           self.damage_rates.ninein_loss_rate);
         set_dr!("cep170_loss_rate",           self.damage_rates.cep170_loss_rate);
+        // P5: Репарация придатков
+        set_dr!("cep164_repair_rate",                  self.damage_rates.cep164_repair_rate);
+        set_dr!("cep89_repair_rate",                   self.damage_rates.cep89_repair_rate);
+        set_dr!("ninein_repair_rate",                  self.damage_rates.ninein_repair_rate);
+        set_dr!("cep170_repair_rate",                  self.damage_rates.cep170_repair_rate);
+        set_dr!("appendage_repair_mitophagy_coupling", self.damage_rates.appendage_repair_mitophagy_coupling);
+        // P4: Сигмоидный переход
+        set_dr!("midlife_transition_center",  self.damage_rates.midlife_transition_center);
+        set_dr!("midlife_transition_width",   self.damage_rates.midlife_transition_width);
+        // P3: Стохастический шум
+        set_dr!("noise_scale",                self.damage_rates.noise_scale);
 
         Ok(())
     }

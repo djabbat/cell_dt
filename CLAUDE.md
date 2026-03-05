@@ -213,25 +213,52 @@ RUST_LOG=debug cargo run --bin human_development_example
 
 | Модуль | Статус | Примечание |
 |--------|--------|------------|
-| `human_development_module` | ✅ Полный | Ядро CDATA, 4 трека (A/B/C/D), PTM exhaustion, 17 тестов |
+| `human_development_module` | ✅ Полный | Ядро CDATA, 4 трека (A/B/C/D), PTM exhaustion, 32 теста |
 | `myeloid_shift_module` | ✅ Полный | myeloid_bias, InflammagingState, 7 тестов |
 | `cell_cycle_module` | ✅ Полный | Фазы + checkpoints + Hayflick (TelomereState), 14 тестов |
 | `centriole_module` | ✅ Полный | PTM-накопление в CentriolePair, M-phase boost, 6 тестов |
-| `transcriptome_module` | 🟡 Частичный | Гены CDKN1A/CDKN2A + GeneExpressionState sync; нет обратной связи циклины→пролиферация |
-| `asymmetric_division_module` | 🟡 Частичный | Классификация деления + DivisionExhaustionState; нет спавна дочерних сущностей |
-| `stem_cell_hierarchy_module` | 🟡 Частичный | Синхронизация потентности из spindle_fidelity; нет пластичности (де-дифференцировки) |
+| `mitochondrial_module` | ✅ Полный | Трек E: мтДНК, ROS, митофагия, mito_shield, 7 тестов |
+| `transcriptome_module` | 🟡 Частичный | p21/p16 → GeneExpressionState sync; **нет Cyclin D/E → G1 ускорения (P6)** |
+| `asymmetric_division_module` | 🟡 Частичный | Классификация + DivisionExhaustionState + spawn queue; **нет NichePool конкуренции (P1)** |
+| `stem_cell_hierarchy_module` | 🟡 Частичный | Потентность из spindle_fidelity; пластичность реализована частично |
 
 ---
 
-## Незавершённые части
+## Незавершённые части (v2 — по результатам научной статьи)
 
-1. **Спавн дочерних сущностей** — `asymmetric_division_module` классифицирует деление, но не создаёт новые entity
-2. **StemCellHierarchy пластичность** — де-дифференцировка при `enable_plasticity=true`
-3. **Python-биндинги** — `cell_dt_python/src/lib.rs` не реализован
-4. **Транскриптом → CellCycle через Cyclin D/E** — уровни из GeneExpressionState влияют на G1, но нет полной петли
-5. **CSV/Viz экспорт** — инфраструктура есть, не подключена к SimulationManager
+Полный список с приоритетами: см. **RECOMMENDATION.md § 10 ROADMAP v2**.
 
-Полный список: см. **RECOMMENDATION.md**.
+### Критично (блокируют научную публикацию)
+
+1. **[P1] Популяционная динамика** — `enable_daughter_spawn = false` по умолчанию,
+   нет NichePool, нет клонального отслеживания → невозможно воспроизвести CHIP
+2. **[P2] Анализ чувствительности** — коэффициент ×4.2 к биохимическим ставкам
+   не идентифицирован; нет `sensitivity_analysis.rs`; нет `ParameterSweepConfig`
+
+### Важно (улучшают биологическую корректность)
+
+3. **[P3] Стохастический шум в ODE** — `accumulate_damage()` детерминирована;
+   нужен `DamageParams.noise_scale` и `&mut StdRng` в сигнатуре
+4. **[P4] Сигмоидный возрастной множитель** — скачок ×1.6 в 40 лет; нужна
+   логистическая функция с `midlife_transition_center` / `midlife_transition_width`
+5. **[P5] Репарация придатков** — потеря CEP164/CEP89/Ninein/CEP170 необратима;
+   нужен `cep164_repair_rate`, пресет `DamageParams::antioxidant()`
+
+### Умеренно важно
+
+6. **[P6] Cyclin D/E → G1 ускорение** — `transcriptome_module` только арестует,
+   не ускоряет цикл; нужны `cyclin_e_level` + MYC петля
+7. **[P8] Критерий смерти** — `D_total > 0.75` = клеточная сенесценция ≠ смерть
+   организма; нужен мультитканевой `OrganismState.is_alive`
+8. **[P10] Веса миелоидного сдвига** — экспонента 1.5 и веса не обоснованы
+   количественно; нужен `spindle_nonlinearity_exponent` в `MyeloidShiftParams`
+
+### Долгосрочно
+
+9. **[P7] Многотканевая модель** — системный SASP, ось IGF-1/GH, агрегация тканей
+10. **[P9] Пространственный O₂-щит** — `mito_shield` = скаляр; нужен `perinuclear_density`
+
+Полный список: см. **RECOMMENDATION.md § 10**.
 
 ---
 

@@ -146,11 +146,19 @@ impl CellCycleModule {
         }
 
         // --- Нормальное продвижение прогресса ---
-        // cyclin_d ускоряет G1→S (высокий уровень CyclinD → короче G1)
-        let g1_boost = gene_expr.map(|g| g.cyclin_d_level * 0.5).unwrap_or(0.0);
+        // P6: Cyclin D + Cyclin E + MYC ускоряют G1→S (полная петля transcriptome→cycle).
+        // Cyclin D: ранняя G1 (CDK4/6-фосфорилирование Rb), 0.5 нормировка.
+        // Cyclin E: поздняя G1 (CDK2-фосфорилирование Rb → необратимый G1→S), 0.35 нормировка.
+        // MYC: ускоряет транскрипцию циклинов и CDK, общий промотор пролиферации, 0.15 норм.
+        let (g1_boost, s_boost) = gene_expr.map(|g| {
+            let g1 = g.cyclin_d_level * 0.50 + g.cyclin_e_level * 0.35 + g.myc_level * 0.15;
+            // MYC также ускоряет репликацию ДНК (S-фаза) через activation origins
+            let s  = g.myc_level * 0.15;
+            (g1, s)
+        }).unwrap_or((0.0, 0.0));
         let phase_duration = match cell_cycle.phase {
             Phase::G1 => (10.0 / (1.0 + g1_boost)).max(1.0),
-            Phase::S  =>  8.0,
+            Phase::S  => (8.0  / (1.0 + s_boost)).max(2.0),
             Phase::G2 =>  4.0,
             Phase::M  =>  1.0,
         };
@@ -720,5 +728,52 @@ mod tests {
         //                высокий cyclin_d → уже в S (нужно ~7 шагов)
         assert_eq!(phase_low,  Phase::G1, "low cyclin_d should still be in G1 after 7 steps");
         assert_eq!(phase_high, Phase::S,  "high cyclin_d should reach S phase in 7 steps");
+    }
+
+    /// P6: Cyclin E ускоряет G1→S независимо от Cyclin D
+    #[test]
+    fn test_cyclin_e_accelerates_g1() {
+        use cell_dt_core::components::GeneExpressionState;
+        let mut m = CellCycleModule::new();
+
+        // Клетка без циклинов (только базальный myc)
+        let mut world_no_e = World::new();
+        let mut cycle = CellCycleStateExtended::new();
+        cycle.phase = Phase::G1;
+        cycle.progress = 0.0;
+        let mut gx_no_e = GeneExpressionState::default();
+        gx_no_e.cyclin_d_level = 0.0;
+        gx_no_e.cyclin_e_level = 0.0;
+        gx_no_e.myc_level      = 0.0;
+        world_no_e.spawn((cycle, gx_no_e));
+
+        // Клетка с высоким Cyclin E (нет Cyclin D)
+        let mut world_high_e = World::new();
+        let mut cycle2 = CellCycleStateExtended::new();
+        cycle2.phase = Phase::G1;
+        cycle2.progress = 0.0;
+        let mut gx_high_e = GeneExpressionState::default();
+        gx_high_e.cyclin_d_level = 0.0;
+        gx_high_e.cyclin_e_level = 1.0;
+        gx_high_e.myc_level      = 0.0;
+        world_high_e.spawn((cycle2, gx_high_e));
+
+        // 9 шагов: без циклинов нужно ровно 10 → ещё G1; с cyclin_e=1.0 → duration≈5.88 → уже S
+        for _ in 0..9 {
+            m.step(&mut world_no_e,   1.0).unwrap();
+            m.step(&mut world_high_e, 1.0).unwrap();
+        }
+
+        let phase_no_e = {
+            let mut q = world_no_e.query::<&CellCycleStateExtended>();
+            q.iter().next().unwrap().1.phase
+        };
+        let phase_high_e = {
+            let mut q = world_high_e.query::<&CellCycleStateExtended>();
+            q.iter().next().unwrap().1.phase
+        };
+
+        assert_eq!(phase_no_e,   Phase::G1, "no cyclins → G1 after 9 steps (duration=10)");
+        assert_ne!(phase_high_e, Phase::G1, "cyclin_e=1.0 → should exit G1 before 9 steps");
     }
 }

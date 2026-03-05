@@ -116,6 +116,10 @@ pub struct MyeloidShiftParams {
     pub ros_boost_scale: f32,
     /// Масштабирование niche_impairment → InflammagingState (default 0.08)
     pub niche_impair_scale: f32,
+    /// Показатель степени нелинейности spindle_fidelity (P10).
+    /// Default 1.5 воспроизводит исходную формулу `(1-sf)^1.5`.
+    /// 1.0 = линейный, 2.0 = более резкий порог.
+    pub spindle_nonlinearity_exponent: f32,
 }
 
 impl Default for MyeloidShiftParams {
@@ -127,6 +131,7 @@ impl Default for MyeloidShiftParams {
             aggregate_weight:  0.10,
             ros_boost_scale:   0.15,
             niche_impair_scale: 0.08,
+            spindle_nonlinearity_exponent: 1.5,
         }
     }
 }
@@ -158,7 +163,8 @@ impl MyeloidShiftModule {
     /// * ros_level        → ros × w_ros
     /// * protein_aggregates → agg × w_agg
     fn compute_myeloid_bias(&self, damage: &CentriolarDamageState) -> f32 {
-        let spindle_c  = (1.0 - damage.spindle_fidelity).powf(1.5) * self.params.spindle_weight;
+        let spindle_c  = (1.0 - damage.spindle_fidelity)
+            .powf(self.params.spindle_nonlinearity_exponent) * self.params.spindle_weight;
         let cilia_c    = (1.0 - damage.ciliary_function)            * self.params.cilia_weight;
         let ros_c      = damage.ros_level                           * self.params.ros_weight;
         let aggr_c     = damage.protein_aggregates                  * self.params.aggregate_weight;
@@ -227,13 +233,14 @@ impl SimulationModule for MyeloidShiftModule {
 
     fn get_params(&self) -> Value {
         json!({
-            "spindle_weight":     self.params.spindle_weight,
-            "cilia_weight":       self.params.cilia_weight,
-            "ros_weight":         self.params.ros_weight,
-            "aggregate_weight":   self.params.aggregate_weight,
-            "ros_boost_scale":    self.params.ros_boost_scale,
-            "niche_impair_scale": self.params.niche_impair_scale,
-            "step_count":         self.step_count,
+            "spindle_weight":                self.params.spindle_weight,
+            "cilia_weight":                  self.params.cilia_weight,
+            "ros_weight":                    self.params.ros_weight,
+            "aggregate_weight":              self.params.aggregate_weight,
+            "ros_boost_scale":               self.params.ros_boost_scale,
+            "niche_impair_scale":            self.params.niche_impair_scale,
+            "spindle_nonlinearity_exponent": self.params.spindle_nonlinearity_exponent,
+            "step_count":                    self.step_count,
         })
     }
 
@@ -245,12 +252,13 @@ impl SimulationModule for MyeloidShiftModule {
                 }
             };
         }
-        set_f32!("spindle_weight",     self.params.spindle_weight);
-        set_f32!("cilia_weight",       self.params.cilia_weight);
-        set_f32!("ros_weight",         self.params.ros_weight);
-        set_f32!("aggregate_weight",   self.params.aggregate_weight);
-        set_f32!("ros_boost_scale",    self.params.ros_boost_scale);
-        set_f32!("niche_impair_scale", self.params.niche_impair_scale);
+        set_f32!("spindle_weight",                self.params.spindle_weight);
+        set_f32!("cilia_weight",                  self.params.cilia_weight);
+        set_f32!("ros_weight",                    self.params.ros_weight);
+        set_f32!("aggregate_weight",              self.params.aggregate_weight);
+        set_f32!("ros_boost_scale",               self.params.ros_boost_scale);
+        set_f32!("niche_impair_scale",            self.params.niche_impair_scale);
+        set_f32!("spindle_nonlinearity_exponent", self.params.spindle_nonlinearity_exponent);
         Ok(())
     }
 
@@ -368,5 +376,33 @@ mod tests {
         assert_eq!(MyeloidPhenotype::from_bias(0.35), MyeloidPhenotype::MildShift);
         assert_eq!(MyeloidPhenotype::from_bias(0.60), MyeloidPhenotype::ModerateShift);
         assert_eq!(MyeloidPhenotype::from_bias(0.80), MyeloidPhenotype::SevereShift);
+    }
+
+    /// P10: показатель степени > 1.5 даёт более резкий порог (меньший bias при малых повреждениях)
+    #[test]
+    fn test_spindle_nonlinearity_exponent_effect() {
+        let mut d = pristine();
+        d.spindle_fidelity = 0.5; // умеренное повреждение
+
+        let m_default = MyeloidShiftModule::new(); // exponent = 1.5
+        let mut m_sharp = MyeloidShiftModule::new();
+        m_sharp.params.spindle_nonlinearity_exponent = 2.5; // более резкий порог
+
+        let bias_default = m_default.compute_myeloid_bias(&d);
+        let bias_sharp   = m_sharp.compute_myeloid_bias(&d);
+
+        // При sf=0.5: (0.5)^1.5 ≈ 0.354 vs (0.5)^2.5 ≈ 0.177
+        // → sharp bias должен быть меньше при умеренных повреждениях
+        assert!(bias_sharp < bias_default,
+            "exponent=2.5 → меньший bias при sf=0.5: default={:.4}, sharp={:.4}",
+            bias_default, bias_sharp);
+
+        // При максимальных повреждениях (sf=0) оба дают одинаковый результат
+        d.spindle_fidelity = 0.0;
+        let bias_max_default = m_default.compute_myeloid_bias(&d);
+        let bias_max_sharp   = m_sharp.compute_myeloid_bias(&d);
+        assert!((bias_max_default - bias_max_sharp).abs() < 0.001,
+            "при sf=0 оба варианта дают одинаковый bias: {:.4} vs {:.4}",
+            bias_max_default, bias_max_sharp);
     }
 }

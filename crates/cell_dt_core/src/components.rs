@@ -820,6 +820,10 @@ pub struct GeneExpressionState {
     /// CCND1 (Cyclin D1) — промотор G1→S перехода [0..1].
     /// Высокий уровень укорачивает G1.
     pub cyclin_d_level: f32,
+    /// CCNE1/2 (Cyclin E) — промотор G1→S (поздняя G1) [0..1].
+    /// Синергичен с Cyclin D: ускоряет переход G1→S при высоких значениях.
+    /// Записывается из `transcriptome_module` (при наличии), иначе дефолтный.
+    pub cyclin_e_level: f32,
     /// MYC — общий транскрипционный активатор пролиферации [0..1].
     pub myc_level: f32,
 }
@@ -830,6 +834,7 @@ impl Default for GeneExpressionState {
             p21_level:      0.0,
             p16_level:      0.0,
             cyclin_d_level: 0.5, // умеренный базальный уровень
+            cyclin_e_level: 0.4, // умеренный базальный уровень
             myc_level:      0.3,
         }
     }
