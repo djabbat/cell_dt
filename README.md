@@ -569,3 +569,5 @@ This is not accidental — neural stem cells have:
 
 *Cell DT Platform — High-Performance Cell Differentiation Simulator*
 *https://github.com/djabbat/cell_dt*
+
+2024–2026 © Jaba Tkemaladze. All rights reserved. No warranty. For educational and research use only.
