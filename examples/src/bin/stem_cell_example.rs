@@ -45,6 +45,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         spindle_failure_threshold: 0.3,
         max_entities: 1000,
         enable_daughter_spawn: false,
+        niche_pool_capacity: 0,
+        enable_niche_competition: false,
+        niche_check_interval: 30,
     };
     let mut asymmetric_module = AsymmetricDivisionModule::with_params(asymmetric_params);
     

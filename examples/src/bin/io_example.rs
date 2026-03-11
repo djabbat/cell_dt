@@ -96,40 +96,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // --- Экспортёры ---
     let mut basic_exporter = DataExporter::new("io_output/data", "simulation");
-    let mut cdata_exporter = CdataExporter::new("io_output/cdata", "cdata");
 
-    println!("\n🚀 Starting simulation with data export...");
+    // P12: CDATA-экспортёр подключён к SimulationManager — collect() вызывается автоматически
+    // каждые 10 шагов без ручного вызова в цикле.
+    sim.set_exporter(
+        Box::new(CdataExporter::new("io_output/cdata", "cdata")),
+        10, // интервал: каждые 10 шагов
+    );
+
+    println!("\n🚀 Starting simulation with data export (P12: auto-exporter)...");
     println!("   Basic cell data  → io_output/data/");
-    println!("   CDATA metrics    → io_output/cdata/\n");
+    println!("   CDATA metrics    → io_output/cdata/ (auto, every 10 steps)\n");
 
     sim.initialize()?;
 
     for step in 0..sim.config().max_steps {
         sim.step()?;
 
-        // Базовый экспорт: каждые 10 шагов
+        // Базовый экспорт: каждые 10 шагов (остаётся ручным — другой тип данных)
         if step % 10 == 0 {
             basic_exporter.collect_data(sim.world(), sim.current_step(), sim.current_time())?;
         }
 
-        // CDATA-экспорт: каждые 10 шагов
-        if step % 10 == 0 {
-            cdata_exporter.collect(sim.world(), sim.current_step());
-        }
-
-        // Сохранение снимков каждые 50 шагов
-        if step % 50 == 0 && step > 0 {
-            if basic_exporter.buffered() > 0 {
-                let path = basic_exporter.save_snapshot(step)?;
-                println!("   💾 Basic snapshot: {}", path.display());
-            }
-            let path = cdata_exporter.save_snapshot(step)?;
-            println!("   📊 CDATA snapshot: {} ({} records)",
-                path.display(), cdata_exporter.buffered_records());
+        // Сохранение базового снимка каждые 50 шагов
+        if step % 50 == 0 && step > 0 && basic_exporter.buffered() > 0 {
+            let path = basic_exporter.save_snapshot(step)?;
+            println!("   💾 Basic snapshot: {}", path.display());
         }
 
         if step % 50 == 0 {
-            println!("   Step {}/{}", step, sim.config().max_steps);
+            println!("   Step {}/{}, CDATA records buffered: {}",
+                step, sim.config().max_steps, sim.exporter_buffered());
         }
     }
 
@@ -140,8 +137,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let path = basic_exporter.save_snapshot(step)?;
         println!("   ✅ Basic data:  {}", path.display());
     }
-    let path = cdata_exporter.save_snapshot(step)?;
-    println!("   ✅ CDATA data:  {}", path.display());
+    sim.write_csv("io_output/cdata/cdata_final.csv")?;
+    println!("   ✅ CDATA data:  io_output/cdata/cdata_final.csv ({} records buffered)",
+        sim.exporter_buffered());
 
     println!("\n=== Summary ===");
     println!("Total steps:    {}", sim.current_step());

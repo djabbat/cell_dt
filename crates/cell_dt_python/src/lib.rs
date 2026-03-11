@@ -384,6 +384,7 @@ impl PyCellCycleParams {
         growth_factor_level = 0.8,
         random_variation = 0.2,
     ))]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         base_cycle_time: f32,
         growth_factor_sensitivity: f32,

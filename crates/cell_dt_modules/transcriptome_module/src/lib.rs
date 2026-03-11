@@ -671,6 +671,9 @@ impl SimulationModule for TranscriptomeModule {
                     .map(|g| g.expression_level).unwrap_or(0.0);
                 gene_expr.cyclin_d_level = transcriptome.genes.get("CCND1")
                     .map(|g| g.expression_level).unwrap_or(0.5);
+                // CCNE1 (Cyclin E) → ускоряет G1→S при высоких значениях
+                gene_expr.cyclin_e_level = transcriptome.genes.get("CCNE1")
+                    .map(|g| g.expression_level).unwrap_or(0.4);
                 gene_expr.myc_level = transcriptome.transcription_factors
                     .get(&TranscriptionFactor::MYC).copied().unwrap_or(0.3);
             }
@@ -758,5 +761,303 @@ impl SimulationModule for TranscriptomeModule {
 impl Default for TranscriptomeModule {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Тесты
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cell_dt_core::components::{CellCycleStateExtended, GeneExpressionState, Phase};
+    use cell_dt_core::hecs::World;
+    use rand::SeedableRng;
+
+    fn make_cycle(phase: Phase) -> CellCycleStateExtended {
+        let mut cycle = CellCycleStateExtended::new();
+        cycle.phase = phase;
+        cycle
+    }
+
+    fn make_rng() -> StdRng {
+        StdRng::seed_from_u64(42)
+    }
+
+    // ── 1. Инициализация ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_all_expected_genes_present() {
+        let state = TranscriptomeState::new();
+        let required = ["CCND1", "CCNE1", "CCNA2", "CCNB1",
+                        "CDKN1A", "CDKN2A", "TP53", "BAX",
+                        "NANOG", "POU5F1", "SOX2",
+                        "CETN1", "CETN2", "PCNT"];
+        for gene in &required {
+            assert!(state.genes.contains_key(*gene),
+                "Ожидался ген '{}' в TranscriptomeState", gene);
+        }
+    }
+
+    #[test]
+    fn test_all_pathways_initialized() {
+        let state = TranscriptomeState::new();
+        let expected = [
+            SignalingPathway::Wnt, SignalingPathway::TGFb, SignalingPathway::Hippo,
+            SignalingPathway::Notch, SignalingPathway::Hedgehog, SignalingPathway::JAKSTAT,
+            SignalingPathway::MAPK, SignalingPathway::PI3K,
+        ];
+        for pw in &expected {
+            assert!(state.pathways.contains_key(pw),
+                "Ожидался путь {:?}", pw);
+            let activity = state.pathways[pw].activity;
+            assert!(activity >= 0.0 && activity <= 1.0,
+                "Активность пути {:?} за пределами [0..1]: {}", pw, activity);
+        }
+    }
+
+    #[test]
+    fn test_stemness_genes_basal_zero() {
+        // NANOG/OCT4/SOX2 должны быть 0 в базальном состоянии (не стволовая клетка)
+        let state = TranscriptomeState::new();
+        for gene in &["NANOG", "POU5F1", "SOX2"] {
+            let expr = state.genes[*gene].expression_level;
+            assert!(expr < 0.01,
+                "Ген {} должен быть ≈0 в базальном состоянии, но = {:.3}", gene, expr);
+        }
+        assert!(!state.is_stem_cell(), "Дефолтный TranscriptomeState не должен быть стволовым");
+    }
+
+    // ── 2. Экспрессия, зависящая от фазы ─────────────────────────────────
+
+    #[test]
+    fn test_cyclin_d_upregulated_in_g1() {
+        let mut state = TranscriptomeState::new();
+        let mut rng = make_rng();
+        let cycle_g1 = make_cycle(Phase::G1);
+        let cycle_s  = make_cycle(Phase::S);
+
+        // Много шагов в G1
+        for _ in 0..50 {
+            state.update_expression(&mut rng, 1.0, &cycle_g1, None);
+        }
+        let expr_g1 = state.genes["CCND1"].expression_level;
+
+        // Сбрасываем и много шагов в S
+        state = TranscriptomeState::new();
+        let mut rng2 = make_rng();
+        for _ in 0..50 {
+            state.update_expression(&mut rng2, 1.0, &cycle_s, None);
+        }
+        let expr_s = state.genes["CCND1"].expression_level;
+
+        assert!(expr_g1 > expr_s,
+            "CCND1 должен быть выше в G1 ({:.3}) чем в S ({:.3})", expr_g1, expr_s);
+    }
+
+    #[test]
+    fn test_cyclin_e_upregulated_in_g1_s() {
+        let mut state = TranscriptomeState::new();
+        let mut rng = make_rng();
+        let cycle_g1 = make_cycle(Phase::G1);
+        let cycle_m  = make_cycle(Phase::M);
+
+        for _ in 0..50 {
+            state.update_expression(&mut rng, 1.0, &cycle_g1, None);
+        }
+        let expr_g1 = state.genes["CCNE1"].expression_level;
+
+        state = TranscriptomeState::new();
+        let mut rng2 = make_rng();
+        for _ in 0..50 {
+            state.update_expression(&mut rng2, 1.0, &cycle_m, None);
+        }
+        let expr_m = state.genes["CCNE1"].expression_level;
+
+        assert!(expr_g1 > expr_m,
+            "CCNE1 должен быть выше в G1 ({:.3}) чем в M ({:.3})", expr_g1, expr_m);
+    }
+
+    #[test]
+    fn test_cyclin_b_upregulated_in_m() {
+        let mut state = TranscriptomeState::new();
+        let mut rng = make_rng();
+        let cycle_m = make_cycle(Phase::M);
+        let cycle_g1 = make_cycle(Phase::G1);
+
+        for _ in 0..50 {
+            state.update_expression(&mut rng, 1.0, &cycle_m, None);
+        }
+        let expr_m = state.genes["CCNB1"].expression_level;
+
+        state = TranscriptomeState::new();
+        let mut rng2 = make_rng();
+        for _ in 0..50 {
+            state.update_expression(&mut rng2, 1.0, &cycle_g1, None);
+        }
+        let expr_g1 = state.genes["CCNB1"].expression_level;
+
+        assert!(expr_m > expr_g1,
+            "CCNB1 должен быть выше в M ({:.3}) чем в G1 ({:.3})", expr_m, expr_g1);
+    }
+
+    // ── 3. Реакция на стресс ──────────────────────────────────────────────
+
+    #[test]
+    fn test_p21_upregulated_by_dna_damage() {
+        let mut state_damage = TranscriptomeState::new();
+        let mut state_ctrl   = TranscriptomeState::new();
+        let mut rng = make_rng();
+
+        let mut cycle_damage = CellCycleStateExtended::new();
+        cycle_damage.growth_factors.dna_damage = 0.9;   // высокое ДНК-повреждение
+
+        let cycle_ctrl = CellCycleStateExtended::new(); // нулевое
+
+        for _ in 0..30 {
+            state_damage.update_expression(&mut rng, 1.0, &cycle_damage, None);
+        }
+        let mut rng2 = make_rng();
+        for _ in 0..30 {
+            state_ctrl.update_expression(&mut rng2, 1.0, &cycle_ctrl, None);
+        }
+
+        assert!(
+            state_damage.genes["CDKN1A"].expression_level
+                > state_ctrl.genes["CDKN1A"].expression_level,
+            "p21 (CDKN1A) должен расти при ДНК-повреждениях"
+        );
+    }
+
+    #[test]
+    fn test_p16_accumulates_with_chronic_stress() {
+        let mut state_stress = TranscriptomeState::new();
+        let mut state_ctrl   = TranscriptomeState::new();
+        let mut rng = make_rng();
+
+        let mut cycle_stress = CellCycleStateExtended::new();
+        cycle_stress.growth_factors.stress_level = 1.0;
+
+        let cycle_ctrl = CellCycleStateExtended::new();
+
+        for _ in 0..100 {
+            state_stress.update_expression(&mut rng, 1.0, &cycle_stress, None);
+        }
+        let mut rng2 = make_rng();
+        for _ in 0..100 {
+            state_ctrl.update_expression(&mut rng2, 1.0, &cycle_ctrl, None);
+        }
+
+        assert!(
+            state_stress.genes["CDKN2A"].expression_level
+                > state_ctrl.genes["CDKN2A"].expression_level,
+            "p16 (CDKN2A) должен накапливаться при хроническом стрессе"
+        );
+    }
+
+    // ── 4. GeneExpressionState синхронизация ─────────────────────────────
+
+    #[test]
+    fn test_gene_expression_state_synced() {
+        let mut world = World::new();
+        let cycle = CellCycleStateExtended::new();
+        let gene_expr = GeneExpressionState::default();
+        let transcriptome = TranscriptomeState::new();
+
+        let entity = world.spawn((cycle, transcriptome, gene_expr));
+
+        let mut module = TranscriptomeModule::new();
+        module.set_seed(0);
+
+        // Шаги в фазе G1 — Cyclin E должна вырасти
+        for (_, cycle) in world.query_mut::<&mut CellCycleStateExtended>() {
+            cycle.phase = Phase::G1;
+        }
+        for _ in 0..20 {
+            module.step(&mut world, 1.0).unwrap();
+        }
+
+        let ge = world.get::<&GeneExpressionState>(entity)
+            .expect("GeneExpressionState должен присутствовать");
+
+        assert!(ge.cyclin_e_level > 0.05,
+            "cyclin_e_level должен быть > 0.05 после G1 шагов, но = {:.3}", ge.cyclin_e_level);
+        assert!(ge.cyclin_d_level > 0.05,
+            "cyclin_d_level должен быть > 0.05 после G1 шагов, но = {:.3}", ge.cyclin_d_level);
+        assert!(ge.cyclin_e_level <= 1.0, "cyclin_e_level не должен превышать 1.0");
+        assert!(ge.cyclin_d_level <= 1.0, "cyclin_d_level не должен превышать 1.0");
+    }
+
+    // ── 5. Сигнальные пути ────────────────────────────────────────────────
+
+    #[test]
+    fn test_jakstat_higher_under_stress() {
+        let mut state_hi = TranscriptomeState::new();
+        let mut state_lo = TranscriptomeState::new();
+        let mut rng = make_rng();
+
+        let mut cycle_hi = CellCycleStateExtended::new();
+        cycle_hi.growth_factors.stress_level = 1.0;
+
+        let mut cycle_lo = CellCycleStateExtended::new();
+        cycle_lo.growth_factors.stress_level = 0.0;
+
+        for _ in 0..30 {
+            state_hi.update_expression(&mut rng, 1.0, &cycle_hi, None);
+        }
+        let mut rng2 = make_rng();
+        for _ in 0..30 {
+            state_lo.update_expression(&mut rng2, 1.0, &cycle_lo, None);
+        }
+
+        let jakstat_hi = state_hi.pathways[&SignalingPathway::JAKSTAT].activity;
+        let jakstat_lo = state_lo.pathways[&SignalingPathway::JAKSTAT].activity;
+
+        assert!(jakstat_hi > jakstat_lo,
+            "JAK/STAT активность должна быть выше при стрессе: {:.3} > {:.3}", jakstat_hi, jakstat_lo);
+    }
+
+    #[test]
+    fn test_all_expression_levels_in_range() {
+        let mut state = TranscriptomeState::new();
+        let mut rng = make_rng();
+        let cycle = make_cycle(Phase::G1);
+
+        // Экстремальный стресс
+        let mut cycle_stress = cycle.clone();
+        cycle_stress.growth_factors.stress_level = 1.0;
+        cycle_stress.growth_factors.dna_damage   = 1.0;
+        cycle_stress.growth_factors.oxidative_stress = 1.0;
+
+        for _ in 0..100 {
+            state.update_expression(&mut rng, 1.0, &cycle_stress, None);
+        }
+
+        for (name, gene) in &state.genes {
+            assert!(gene.expression_level >= 0.0 && gene.expression_level <= gene.max_expression,
+                "Ген {} = {:.3} за пределами [0..{:.1}]", name, gene.expression_level, gene.max_expression);
+        }
+        for (pw, ps) in &state.pathways {
+            assert!(ps.activity >= 0.0 && ps.activity <= 1.0,
+                "Путь {:?} activity = {:.3} за пределами [0..1]", pw, ps.activity);
+        }
+    }
+
+    #[test]
+    fn test_differentiation_score_computed() {
+        let mut state = TranscriptomeState::new();
+        let mut rng = make_rng();
+        let cycle = CellCycleStateExtended::new();
+
+        // Без стволовых генов → дифференцировка должна быть высокой
+        for _ in 0..30 {
+            state.update_expression(&mut rng, 1.0, &cycle, None);
+        }
+
+        // differentiation_score = 1 - stemness/3, при stemness=0 → score=1.0
+        assert!(state.differentiation_score >= 0.9,
+            "differentiation_score должен быть ≈1.0 без стволовых генов, но = {:.3}",
+            state.differentiation_score);
     }
 }

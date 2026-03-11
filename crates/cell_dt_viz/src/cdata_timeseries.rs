@@ -96,7 +96,7 @@ impl CdataTimeSeriesVisualizer {
 
     /// Собрать снимок (если шаг кратен `collect_interval`)
     pub fn collect(&mut self, world: &World, step: u64) {
-        if self.collect_interval > 0 && step % self.collect_interval != 0 { return; }
+        if self.collect_interval > 0 && !step.is_multiple_of(self.collect_interval) { return; }
         if let Some(snap) = CdataSnapshot::from_world(world, step) {
             self.history.push(snap);
         }

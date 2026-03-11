@@ -44,8 +44,10 @@ use log::{info, trace, warn};
 
 /// Фенотип миелоидного сдвига — качественная оценка тяжести
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum MyeloidPhenotype {
     /// myeloid_bias < 0.30 — норма
+    #[default]
     Healthy,
     /// 0.30..0.50 — субклинический сдвиг
     MildShift,
@@ -66,9 +68,6 @@ impl MyeloidPhenotype {
     }
 }
 
-impl Default for MyeloidPhenotype {
-    fn default() -> Self { Self::Healthy }
-}
 
 /// ECS-компонент: состояние миелоидного сдвига ниши
 #[derive(Debug, Clone, Serialize, Deserialize)]

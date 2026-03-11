@@ -7,7 +7,7 @@ use crate::IoResult;
 use csv::Writer;
 use human_development_module::HumanDevelopmentComponent;
 use myeloid_shift_module::MyeloidShiftComponent;
-use cell_dt_core::hecs::World;
+use cell_dt_core::{CdataCollect, hecs::World};
 use std::path::{Path, PathBuf};
 
 /// Одна строка CDATA-экспорта (одна сущность, один шаг)
@@ -122,6 +122,25 @@ impl CdataExporter {
     /// Число записей в буфере (до сохранения)
     pub fn buffered_records(&self) -> usize {
         self.buffer.len()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// P12: реализация трейта CdataCollect для CdataExporter
+// ---------------------------------------------------------------------------
+
+impl CdataCollect for CdataExporter {
+    fn collect(&mut self, world: &World, step: u64) {
+        self.collect(world, step);
+    }
+
+    fn write_csv(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        write_cdata_csv(path, &self.buffer)?;
+        Ok(())
+    }
+
+    fn buffered(&self) -> usize {
+        self.buffered_records()
     }
 }
 

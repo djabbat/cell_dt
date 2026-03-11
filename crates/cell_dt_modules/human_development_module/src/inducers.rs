@@ -52,15 +52,21 @@ impl HumanInducers {
 /// Вычислить уровень O₂ у центриолей из молекулярного состояния центриоли.
 ///
 /// В норме митохондрии поглощают весь кислород до центра клетки.
-/// По мере накопления повреждений (ROS, агрегаты, карбонилирование)
-/// митохондриальный щит слабеет, и O₂ проникает к центриолям.
+/// Fallback-оценка O₂ у центросомы, когда MitochondrialModule не зарегистрирован.
 ///
-/// Возвращает [0..1]: 0 = полный щит (центриоли защищены), 1 = максимальное воздействие.
+/// Используется ТОЛЬКО как приближение — предпочтительнее `mito_shield_contribution`
+/// из `MitochondrialState` (формула: fusion×0.40 + Ψm×0.35 + (1−ros_prod)×0.25).
+///
+/// Причинность: ROS и белковые агрегаты нарушают митопhagy → митохондрии
+/// не успевают перехватить O₂ → он достигает центросомы.
+/// Карбонилирование центриолей — СЛЕДСТВИЕ O₂-воздействия, а не причина слабости щита;
+/// поэтому оно здесь НЕ используется.
+///
+/// Возвращает [0..1]: 0 = центриоли защищены, 1 = максимальное воздействие O₂.
 pub fn centrosomal_oxygen_level(damage: &CentriolarDamageState) -> f32 {
     let mito_shield = (1.0
-        - damage.ros_level         * 0.50   // ROS — главный разрушитель щита
-        - damage.protein_aggregates * 0.30   // агрегаты CPAP/CEP290 блокируют митофагию
-        - damage.protein_carbonylation * 0.20) // карбонилирование SAS-6 снижает активность
+        - damage.ros_level          * 0.60  // ROS — главный деструктор митохондрий
+        - damage.protein_aggregates * 0.40) // агрегаты блокируют митофагию
         .max(0.0);
     (1.0 - mito_shield).clamp(0.0, 1.0)
 }
@@ -119,7 +125,7 @@ pub fn detach_by_oxygen(
     let m_has = pair.mother_set.has_any();
     let d_has = pair.daughter_set.has_any();
     let mut detached = false;
-    let params = pair.detachment_params.clone();
+    let params = pair.detachment_params;
 
     match (m_has, d_has) {
         (true, true) => {

@@ -382,7 +382,7 @@ pub struct InducerDetachmentParams {
 impl Default for InducerDetachmentParams {
     fn default() -> Self {
         Self {
-            base_detach_probability: 0.002,
+            base_detach_probability: 0.0003,
             mother_bias: 0.5,           // одинаковая вероятность для M и D
             age_bias_coefficient: 0.0,  // возраст не влияет по умолчанию
             ptm_exhaustion_scale: 0.001, // PTM-асимметрия → истощение матери
@@ -455,13 +455,13 @@ impl CentriolarInducerPair {
             mother_set:  self.mother_set.clone(),
             daughter_set: self.mother_set.inherit_from(),
             division_count: 0,
-            detachment_params: self.detachment_params.clone(),
+            detachment_params: self.detachment_params,
         };
         let cell_b = CentriolarInducerPair {
             mother_set:  self.daughter_set.clone(),
             daughter_set: self.daughter_set.inherit_from(),
             division_count: 0,
-            detachment_params: self.detachment_params.clone(),
+            detachment_params: self.detachment_params,
         };
         (cell_a, cell_b)
     }
@@ -581,6 +581,25 @@ impl CentriolarDamageState {
     pub fn pool_exhaustion_probability(&self) -> f32 {
         self.symmetric_division_probability() * 0.6
     }
+
+    /// Hill-функция активации GLI через первичную ресничку (Трек A, нелинейный).
+    ///
+    /// Моделирует реснично-зависимую обработку GLI-транскрипционного фактора
+    /// в позвоночных: SMO → кончик реснички → GLI-активатор.
+    ///
+    /// Формула: `GLI = cilia^n / (K^n + cilia^n)`
+    /// - K = 0.5 (EC50, нормализованный): при ciliary_function=0.5 ответ = 50%
+    /// - n = 2.0 (коэффициент Хилла): кооперативность → сигмоидный порог
+    ///
+    /// Биологическое обоснование: переход от линейного к нелинейному (~возраст 50 лет)
+    /// соответствует клиническим данным о резком снижении Hedgehog-зависимого
+    /// самообновления HSC и нейральных прогениторов (Rohatgi et al., 2007).
+    pub fn gli_activation(&self) -> f32 {
+        const K: f32 = 0.5; // EC50 нормализованный
+        const N: f32 = 2.0; // коэффициент Хилла (кооперативность SMO-GLI)
+        let c = self.ciliary_function;
+        c.powf(N) / (K.powf(N) + c.powf(N))
+    }
 }
 
 impl Default for CentriolarDamageState {
@@ -629,13 +648,80 @@ pub enum TissueType {
     Lung,
 }
 
+/// Правило центриолярной асимметрии при делении стволовой клетки.
+///
+/// Определяет, какая из центриолей (материнская или дочерняя) наследуется
+/// дочерней клеткой, остающейся в стволовом состоянии.
+///
+/// Источники: «Centrioles as determinants» (2026-01-27),
+///            «Strategic Timekeepers» (2026-01-15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CentrioleAsymmetryRule {
+    /// Материнская центриоль → стволовая дочь (HSC, нейральная радиальная глия,
+    /// зародышевые клетки млекопитающих, гепатоциты).
+    ///
+    /// Следствие для CDATA: материнский комплект (M-set) несёт «историю» ниши
+    /// и теряет индукторы быстрее (больше ПТМ, слабее связи) → `mother_bias > 0.5`.
+    MotherToStem,
+    /// Дочерняя центриоль → стволовая дочь (нейробласты Drosophila).
+    ///
+    /// Редкое исключение. Для млекопитающих не характерно.
+    /// Следствие для CDATA: D-set = стволовой, поэтому D теряет медленнее → `mother_bias < 0.5`.
+    DaughterToStem,
+    /// Симметричное деление: обе центриоли равнозначны.
+    ///
+    /// Характерно для эпителия, мышечных сателлитов, кожи.
+    /// `mother_bias = 0.5`.
+    Symmetric,
+}
+
+impl TissueType {
+    /// Правило асимметрии центриолей для данного типа ткани.
+    pub fn asymmetry_rule(self) -> CentrioleAsymmetryRule {
+        use CentrioleAsymmetryRule::*;
+        match self {
+            // MotherToStem: материнская → долгосрочная стволовая ниша
+            TissueType::Blood     => MotherToStem, // LT-HSC наследует мать. (Hinge et al. 2020)
+            TissueType::Neural    => MotherToStem, // радиальная глия → нейрогенная нишa
+            TissueType::Germline  => MotherToStem, // зародышевые стволовые клетки
+            TissueType::Liver     => MotherToStem, // гепатоциты зоны 1 (перипортальные)
+            // Symmetric: симметричное деление, оба пула равнозначны
+            TissueType::Epithelial   => Symmetric,
+            TissueType::Muscle       => Symmetric,
+            TissueType::Skin         => Symmetric,
+            TissueType::Connective   => Symmetric,
+            TissueType::Bone         => Symmetric,
+            TissueType::Cartilage    => Symmetric,
+            TissueType::Adipose      => Symmetric,
+            TissueType::Kidney       => Symmetric,
+            TissueType::Heart        => Symmetric,
+            TissueType::Lung         => Symmetric,
+        }
+    }
+
+    /// Ткань-специфичный `mother_bias` для `InducerDetachmentParams`.
+    ///
+    /// Значение определяется правилом асимметрии:
+    /// - `MotherToStem` → 0.65 (мать старше, больше ПТМ, связи слабее → теряет чаще)
+    /// - `DaughterToStem` → 0.35 (дочь = стволовая, мать теряет меньше)
+    /// - `Symmetric` → 0.50
+    pub fn default_mother_bias(self) -> f32 {
+        match self.asymmetry_rule() {
+            CentrioleAsymmetryRule::MotherToStem   => 0.65,
+            CentrioleAsymmetryRule::DaughterToStem => 0.35,
+            CentrioleAsymmetryRule::Symmetric      => 0.50,
+        }
+    }
+}
+
 /// Состояние ткани — агрегированные метрики регенеративного потенциала
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TissueState {
     pub tissue_type: TissueType,
     /// Размер пула стволовых клеток (0..1, относительно молодого организма)
     pub stem_cell_pool: f32,
-    /// Темп регенерации (0..1, относительно молодого организма)
+    /// Темп регенерации (0..1, относительно молодого организма).
+    /// Вычисляется через Hill-функцию GLI (нелинейно от ciliary_function).
     pub regeneration_tempo: f32,
     /// Доля сенесцентных клеток [0..1]
     pub senescent_fraction: f32,
@@ -643,6 +729,22 @@ pub struct TissueState {
     pub mean_centriole_age: f32,
     /// Функциональная ёмкость ткани [0..1]
     pub functional_capacity: f32,
+
+    // ── Морфогенные поля (P13) ────────────────────────────────────────────
+    /// Локальная концентрация Sonic Hedgehog [0..1] в нише.
+    /// Продуцируется поддерживающими клетками, потребляется через PTCH1 на реснички.
+    /// Снижается с возрастом: cilia loss → нарушение рецепции → градиент размывается.
+    pub shh_concentration: f32,
+    /// Баланс BMP-активность / Noggin-ингибирование [0..1].
+    /// 0.0 = полный Noggin-эффект (стволовость); 1.0 = максимальная BMP (дифференцировка).
+    /// С возрастом: cilia loss → Noggin↓ → BMP_balance↑ → дифференцировка↑.
+    pub bmp_balance: f32,
+    /// Активность Wnt-пути в нише [0..1].
+    /// Зависит от stem_cell_pool (больше клеток → больше Wnt-лигандов) и ресничек.
+    pub wnt_activity: f32,
+    /// Активация GLI (Hedgehog-ответ через ресничку) [0..1].
+    /// Hill-нелинейная функция от ciliary_function, вычисляется в update_tissue_state.
+    pub gli_activation: f32,
 }
 
 impl TissueState {
@@ -654,6 +756,11 @@ impl TissueState {
             senescent_fraction: 0.0,
             mean_centriole_age: 0.0,
             functional_capacity: 1.0,
+            // Морфогенные поля — инициализируются "молодым" паттерном
+            shh_concentration: 0.8,  // высокий Shh в молодой нише
+            bmp_balance: 0.3,        // умеренный BMP (Noggin преобладает)
+            wnt_activity: 0.7,       // активный Wnt → самообновление
+            gli_activation: 0.8,     // полный GLI-ответ при cilia=1.0
         }
     }
 
@@ -662,6 +769,48 @@ impl TissueState {
         self.functional_capacity = self.stem_cell_pool
             * self.regeneration_tempo
             * (1.0 - self.senescent_fraction * 0.8);
+    }
+
+    /// Обновить морфогенные поля на основе текущего состояния ниши.
+    ///
+    /// Вызывается из `HumanDevelopmentModule::update_tissue_state()`.
+    ///
+    /// # Аргументы
+    /// * `ciliary_function` — из `CentriolarDamageState`
+    /// * `detail_level` — `tissue_detail_level` из `HumanDevelopmentParams`:
+    ///   - 1: только GLI-активация (минимум, быстро)
+    ///   - 2: GLI + BMP_balance
+    ///   - 3+: полный морфогенный профиль (GLI + BMP + Wnt + Shh)
+    pub fn update_morphogen_fields(&mut self, ciliary_function: f32, detail_level: usize) {
+        // Уровень 1+: GLI-активация (Hedgehog) через Hill-нелинейность реснички.
+        // Это основной механизм Трека A — всегда вычисляется.
+        const K: f32 = 0.5;
+        const N: f32 = 2.0;
+        let c = ciliary_function;
+        self.gli_activation = c.powf(N) / (K.powf(N) + c.powf(N));
+
+        if detail_level < 2 { return; }
+
+        // Уровень 2+: BMP/Noggin баланс.
+        // С потерей ресничек падает Noggin → BMP-активность растёт → дифференцировка↑.
+        // Биологически: Noggin-экспрессия в нише зависит от Hedgehog через ресничку.
+        let noggin_activity = ciliary_function * 0.7;
+        self.bmp_balance = ((1.0 - noggin_activity) * 0.8
+            + self.senescent_fraction * 0.2)
+            .clamp(0.0, 1.0);
+
+        if detail_level < 3 { return; }
+
+        // Уровень 3+: полный морфогенный профиль (Shh + Wnt).
+        // Shh: продукция ∝ пулу стволовых клеток + вкладу Wnt
+        self.shh_concentration = (self.stem_cell_pool * 0.8
+            + self.wnt_activity * 0.2)
+            .clamp(0.0, 1.0);
+
+        // Wnt: синергия с GLI (Wnt-Hedgehog crosstalk в нише HSC/NSC)
+        self.wnt_activity = (self.stem_cell_pool * 0.6
+            + self.gli_activation * 0.4)
+            .clamp(0.0, 1.0);
     }
 }
 
@@ -684,6 +833,13 @@ pub struct OrganismState {
     pub muscle_mass: f32,
     /// Жив ли организм
     pub is_alive: bool,
+    /// Уровень ИФР-1/ГР (ось IGF-1/GH) [0..1].
+    /// Пик в ~20 лет, линейное снижение до 0.3 к 90 годам.
+    /// Влияет на `regeneration_tempo` всех тканей.
+    pub igf1_level: f32,
+    /// Уровень системного SASP [0..1] — среднее sasp_output всех ниш.
+    /// Паракринный сигнал: ускоряет повреждения соседних тканей.
+    pub systemic_sasp: f32,
 }
 
 impl OrganismState {
@@ -697,6 +853,8 @@ impl OrganismState {
             immune_reserve: 1.0,
             muscle_mass: 1.0,
             is_alive: true,
+            igf1_level: 1.0,
+            systemic_sasp: 0.0,
         }
     }
 }
@@ -890,6 +1048,11 @@ pub struct EpigeneticClockState {
     /// Аналог `InflammagingState::ros_boost`, но от эпигенетических часов.
     /// Читается в начале step() и передаётся в `accumulate_damage()` вместе с infl_ros_boost.
     pub epi_ros_contribution: f32,
+    /// Число делений на момент последнего эпигенетического сброса.
+    /// Используется для детекции новых делений (сравнивается с `DivisionExhaustionState::total_divisions`).
+    /// При делении дочерняя клетка наследует только половину «лишнего» метилирования:
+    /// `methylation_age = (methylation_age + chron_age) / 2`.
+    pub last_division_count: u32,
 }
 
 impl Default for EpigeneticClockState {
@@ -898,7 +1061,437 @@ impl Default for EpigeneticClockState {
             methylation_age: 0.0,
             clock_acceleration: 1.0,
             epi_ros_contribution: 0.0,
+            last_division_count: 0,
         }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Циркадный ритм (P18) — нарушение через потерю ресничек (CEP164↓)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Состояние циркадного ритма стволовой ниши.
+///
+/// # Механизм связи с CDATA
+///
+/// Первичные реснички у стволовых клеток необходимы для трансдукции
+/// ночных сигналов SCN (супрахиазматического ядра) через SHH-рецептор PTCH1
+/// и цАМФ-каскад. CEP164 — ключевой белок перехода зоны — обеспечивает
+/// барьер, необходимый для правильной сборки и функции реснички.
+///
+/// С потерей CEP164:
+///  - нарушается PTCH1-канализация → Shh/Wnt сигналы ослабевают
+///  - периферическая циркадная синхронизация нарушается → амплитуда↓
+///  - BMAL1/CLOCK-зависимая активация протеасомы в ночной фазе снижается
+///  - NF-κB получает конститутивную активацию → SASP↑
+///
+/// Биологические ссылки:
+///  - Baggs & Green (2003): Clock proteins at centrosome
+///  - Yeh et al. (2013): Primary cilia in circadian input
+///  - Lipton et al. (2015): Circadian proteasome regulation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CircadianState {
+    /// Циркадная амплитуда [0..1].
+    /// 1.0 = здоровый ритм; снижается при потере CEP164 и накоплении агрегатов.
+    /// `amplitude = (cep164 × 0.6 + (1 − aggregates) × 0.4) × (1 − ros × 0.2)`
+    pub amplitude: f32,
+
+    /// Когерентность клеточных часов [0..1] — синхронность BMAL1/CLOCK цикла.
+    /// Нарушается при высоком ROS (окисление CLOCK-белков).
+    pub phase_coherence: f32,
+
+    /// Циркадный буст протеасомы в ночной фазе [0..1].
+    /// Модулирует агрегасомный клиренс: `proteasome_night_boost = amplitude × 0.25`.
+    /// В норме UPS активность на 25% выше в ночной фазе (Lipton et al. 2015).
+    pub proteasome_night_boost: f32,
+
+    /// Вклад циркадного нарушения в SASP [0..0.3].
+    /// `= (1 − amplitude) × 0.3`
+    /// Биологически: нарушение циркадных часов активирует NF-κB конститутивно.
+    pub circadian_sasp_contribution: f32,
+}
+
+impl Default for CircadianState {
+    fn default() -> Self {
+        Self {
+            amplitude:                  1.0,
+            phase_coherence:            1.0,
+            proteasome_night_boost:     0.25,
+            circadian_sasp_contribution: 0.0,
+        }
+    }
+}
+
+impl CircadianState {
+    /// Обновить циркадное состояние на основе текущих повреждений центриоли.
+    pub fn update(&mut self, dam: &CentriolarDamageState) {
+        // Амплитуда: определяется целостностью CEP164 (ресничка) и уровнем агрегатов
+        // (агрегаты нарушают BMAL1-транслокацию), модулируется ROS (окисление Clock)
+        self.amplitude = (
+            dam.cep164_integrity * 0.6
+            + (1.0 - dam.protein_aggregates) * 0.4
+        ) * (1.0 - dam.ros_level * 0.2);
+        self.amplitude = self.amplitude.clamp(0.0, 1.0);
+
+        // Когерентность: нарушается ROS → окисление CLOCK/BMAL1
+        self.phase_coherence = (1.0 - dam.ros_level * 0.5)
+            .clamp(0.1, 1.0);
+
+        // Ночной буст протеасомы: пропорционален амплитуде
+        self.proteasome_night_boost = self.amplitude * 0.25;
+
+        // Циркадный вклад в SASP (конститутивная NF-κB при десинхронизации)
+        self.circadian_sasp_contribution = (1.0 - self.amplitude) * 0.3;
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Аутофагия / mTOR (P19)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Состояние пути аутофагии и mTOR-регуляции.
+///
+/// mTOR — главный ингибитор аутофагии. С возрастом mTOR-активность растёт
+/// (nutrient sensing desensitization), аутофагический поток падает → агрегаты↑.
+///
+/// Связь с CDATA:
+/// - Аутофагия чистит агрегаты независимо от агрегасомного пути (дополнительный клиренс)
+/// - CR (Caloric Restriction) → mTOR↓ → аутофагия↑ → CDATA↓ (механизм интервенции P11)
+/// - NadPlus → SIRT1↑ → AMPK↑ → mTOR↓ → аутофагия↑
+/// - Mitophagy (MitochondrialModule) — частный случай: аутофагия специфически митохондрий
+///
+/// Биологические ссылки:
+/// - Rubinsztein et al. (2011): Autophagy and ageing — Nature Rev Mol Cell Biol
+/// - Harrison et al. (2009): Rapamycin-extended lifespan — Nature
+/// - Madeo et al. (2015): Spermidine/AMPK/autophagy — Science
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutophagyState {
+    /// Активность mTOR комплекса 1 [0..1].
+    /// 0.0 = полное подавление (CR/рапамицин); 1.0 = максимальная активность.
+    /// `mtor_activity_base = 0.3 + age/100 × 0.5`; модулируется питанием/интервенциями.
+    pub mtor_activity: f32,
+
+    /// Аутофагический поток [0..1].
+    /// Обратно пропорционален mTOR: `autophagy_flux = 1 − mtor_activity × 0.8`
+    pub autophagy_flux: f32,
+
+    /// Вклад аутофагии в клиренс агрегатов [0..1].
+    /// = `autophagy_flux × 0.10` — максимально 10% агрегатов/год при полной аутофагии.
+    pub aggregate_autophagy_clearance: f32,
+
+    /// Связь с митофагией: аутофагия усиливает базовую митофагию [0..0.3].
+    /// = `autophagy_flux × 0.3`; суммируется с `MitochondrialState::mitophagy_flux`.
+    pub mitophagy_coupling: f32,
+}
+
+impl Default for AutophagyState {
+    fn default() -> Self {
+        Self {
+            mtor_activity:               0.3,   // молодой организм: умеренный mTOR
+            autophagy_flux:              0.76,  // = 1 − 0.3×0.8
+            aggregate_autophagy_clearance: 0.076,
+            mitophagy_coupling:          0.228,
+        }
+    }
+}
+
+impl AutophagyState {
+    /// Обновить аутофагическое состояние.
+    ///
+    /// # Аргументы
+    /// * `age_years`         — хронологический возраст (лет)
+    /// * `cr_active`         — флаг Caloric Restriction интервенции
+    /// * `nad_plus_active`   — флаг NadPlus интервенции
+    pub fn update(&mut self, age_years: f32, cr_active: bool, nad_plus_active: f32) {
+        // Базовая mTOR: растёт с возрастом (десенсибилизация нутриент-сенсинга)
+        let age_mtor = (0.3 + age_years / 100.0 * 0.5).clamp(0.3, 0.8);
+
+        // Интервенции снижают mTOR:
+        // CR: ~30% снижение mTOR (AMPK↑)
+        // NadPlus: ~20% снижение (SIRT1→AMPK)
+        let cr_reduction    = if cr_active { 0.30 } else { 0.0 };
+        let nadp_reduction  = nad_plus_active * 0.20;
+
+        self.mtor_activity = (age_mtor - cr_reduction - nadp_reduction).clamp(0.05, 1.0);
+
+        // Аутофагический поток: обратно пропорционален mTOR
+        self.autophagy_flux = (1.0 - self.mtor_activity * 0.8).clamp(0.0, 1.0);
+
+        // Клиренс агрегатов через аутофагию (независим от протеасомного пути)
+        self.aggregate_autophagy_clearance = self.autophagy_flux * 0.10;
+
+        // Буст митофагии (суммируется с базовым потоком MitochondrialModule)
+        self.mitophagy_coupling = self.autophagy_flux * 0.30;
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Протеостаз (P16) — белковый гомеостаз и клиренс агрегатов
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Состояние системы протеостаза (белкового гомеостаза).
+///
+/// Центросома = организующий центр агрегасом (Johnston et al. 1998).
+/// Повреждение CEP164/spindle → нарушение агрегасом → агрегаты накапливаются быстрее.
+/// HSP70/90 оксидируются ROS → потеря шапероновой ёмкости.
+/// Протеасома перегружается агрегатами → активность падает.
+///
+/// Этот компонент модифицирует скорость накопления `protein_aggregates` в `CentriolarDamageState`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProteostasisState {
+    /// Ёмкость протеасомы UPS [0..1].
+    /// Снижается при перегрузке белковыми агрегатами: `= max(0, 1 - aggregates × 0.8)`.
+    pub proteasome_activity: f32,
+
+    /// Шапероновая ёмкость (HSP70/90/110) [0..1].
+    /// Окисляется ROS: `= max(0.1, 1 - ros × 0.6)`.
+    pub hsp_capacity: f32,
+
+    /// Индекс формирования агрегасом [0..1].
+    /// Зависит от целостности центросомы: `= cep164 × 0.6 + spindle_fidelity × 0.4`.
+    /// Высокий индекс = центросома активно маршрутизирует мисфолдированные белки к лизосомам.
+    pub aggresome_index: f32,
+
+    /// Нагрузка несложенных белков (UPR-стресс) [0..1].
+    /// `= aggregates × (1 - proteasome_activity × 0.7 - hsp_capacity × 0.3)`
+    pub unfolded_protein_load: f32,
+
+    /// Эффективный клиренс агрегатов [0..1] — суммарный защитный эффект.
+    /// Применяется как `aggregate_clearance_rate = aggresome_index × hsp_capacity`.
+    pub aggregate_clearance_rate: f32,
+}
+
+impl Default for ProteostasisState {
+    fn default() -> Self {
+        Self {
+            proteasome_activity:     1.0,
+            hsp_capacity:            1.0,
+            aggresome_index:         1.0,
+            unfolded_protein_load:   0.0,
+            aggregate_clearance_rate: 1.0,
+        }
+    }
+}
+
+impl ProteostasisState {
+    /// Обновить состояние протеостаза на основе текущих повреждений.
+    ///
+    /// Вызывается в `HumanDevelopmentModule::step()` ПОСЛЕ `accumulate_damage()`.
+    pub fn update(&mut self, dam: &CentriolarDamageState) {
+        // Протеасома: перегружается при высоких агрегатах
+        self.proteasome_activity = (1.0 - dam.protein_aggregates * 0.8).max(0.1);
+
+        // Шапероны: оксидируются ROS
+        self.hsp_capacity = (1.0 - dam.ros_level * 0.6).max(0.1);
+
+        // Агрегасомный индекс: зависит от CEP164 (переходная зона) и spindle_fidelity (MTOC)
+        self.aggresome_index = dam.cep164_integrity * 0.6
+            + dam.spindle_fidelity * 0.4;
+
+        // UPR-нагрузка: агрегаты, которые не удаётся разобрать
+        let clearance_capacity = self.proteasome_activity * 0.7 + self.hsp_capacity * 0.3;
+        self.unfolded_protein_load =
+            (dam.protein_aggregates * (1.0 - clearance_capacity)).clamp(0.0, 1.0);
+
+        // Суммарный клиренс: агрегасомы + шапероны работают совместно
+        self.aggregate_clearance_rate =
+            (self.aggresome_index * self.hsp_capacity).clamp(0.0, 1.0);
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// NK-клеточный иммунный надзор (P15)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Состояние NK-клеточного иммунного надзора стволовой ниши.
+///
+/// NK-клетки распознают повреждённые стволовые клетки через NKG2D-лиганды
+/// (MICA/MICB/ULBP1-3), экспрессия которых индуцируется при клеточном стрессе
+/// (ATM/ATR → NF-κB → лиганды), и элиминируют их.
+///
+/// С возрастом активность NK-клеток снижается (иммуносенесценция): меньше
+/// функциональных NK-клеток → дефектные HSC выживают → CDATA ускоряется.
+///
+/// Обратная связь с myeloid_shift: миелоидный сдвиг подавляет NK-функцию
+/// через ИЛ-13/ИЛ-4 (Th2-поляризация) и TGF-β (Трeg-экспансия).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NKSurveillanceState {
+    /// Поверхностная экспрессия NKG2D-лигандов [0..1].
+    /// Растёт пропорционально ROS и белковым агрегатам (стресс-ответ).
+    pub nkg2d_ligand_expression: f32,
+
+    /// Активность NK-клеток в нише [0..1].
+    /// 1.0 — молодой здоровый организм; снижается с возрастом и при миелоидном сдвиге.
+    pub nk_activity: f32,
+
+    /// Вероятность NK-элиминации клетки за один шаг [0..1].
+    /// `kill_prob = nk_activity × nkg2d_expression × (1 − immune_escape_fraction)`
+    pub nk_kill_probability: f32,
+
+    /// Фракция клеток с иммунным ускользанием [0..1].
+    /// Возникает из-за снижения MHC-I (иммунное ускользание при высоких повреждениях).
+    /// При protein_carbonylation > 0.6: MHC-I нарушается → частичное ускользание.
+    pub immune_escape_fraction: f32,
+
+    /// Общее число NK-элиминаций, пережитых нишей (для мониторинга).
+    pub total_eliminations: u32,
+}
+
+impl Default for NKSurveillanceState {
+    fn default() -> Self {
+        Self {
+            nkg2d_ligand_expression: 0.0,
+            nk_activity:             1.0,
+            nk_kill_probability:     0.0,
+            immune_escape_fraction:  0.0,
+            total_eliminations:      0,
+        }
+    }
+}
+
+impl NKSurveillanceState {
+    /// Обновить NK-состояние на основе текущих повреждений и возраста.
+    ///
+    /// # Аргументы
+    /// * `ros`           — `CentriolarDamageState::ros_level`
+    /// * `aggregates`    — `CentriolarDamageState::protein_aggregates`
+    /// * `carbonylation` — `CentriolarDamageState::protein_carbonylation`
+    /// * `age_years`     — хронологический возраст (лет)
+    /// * `myeloid_bias`  — из `MyeloidShiftComponent::myeloid_bias` (опционально, 0 если нет)
+    pub fn update(
+        &mut self,
+        ros: f32,
+        aggregates: f32,
+        carbonylation: f32,
+        age_years: f32,
+        myeloid_bias: f32,
+    ) {
+        // NKG2D-лиганды индуцируются при стрессе (ROS + агрегаты).
+        // ВАЖНО: нормальные клетки не экспрессируют NKG2D-лиганды — только клетки
+        // под серьёзным стрессом (>30% от максимума). Поэтому вычитаем базовый уровень 0.30.
+        // Биологически: MICA/MICB/ULBP1-3 индуцируются только при активации ATM/ATR/NF-κB,
+        // что требует значимого повреждения ДНК или белкового стресса (Raulet et al. 2013).
+        let raw_ligand = ros * 0.6 + aggregates * 0.4;
+        self.nkg2d_ligand_expression = (raw_ligand - 0.30).max(0.0).clamp(0.0, 1.0);
+
+        // NK-активность: 1.0 в молодости, линейно снижается после 40 лет до 0.3 к 90 годам.
+        // Дополнительно подавляется миелоидным сдвигом (TGF-β/ИЛ-13).
+        let age_decline = if age_years > 40.0 {
+            ((age_years - 40.0) / 50.0 * 0.7).clamp(0.0, 0.7)
+        } else {
+            0.0
+        };
+        let myeloid_suppression = myeloid_bias * 0.25;
+        self.nk_activity = (1.0 - age_decline - myeloid_suppression).clamp(0.1, 1.0);
+
+        // Иммунное ускользание: при высоком карбонилировании нарушается MHC-I
+        self.immune_escape_fraction = (carbonylation * 0.5).clamp(0.0, 0.5);
+
+        // Итоговая вероятность элиминации за один шаг.
+        // Ненулевая только если лиганды выше базового уровня.
+        self.nk_kill_probability = (
+            self.nk_activity
+            * self.nkg2d_ligand_expression
+            * (1.0 - self.immune_escape_fraction)
+        ).clamp(0.0, 1.0);
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Ответ на повреждение ДНК (P20) — DDR / ATM / p53
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Состояние пути ответа на повреждение ДНК (DDR).
+///
+/// Spindle fidelity↓ → хромосомная нестабильность → анеуплоидия → DSB (двунитевые разрывы) →
+/// ATM-киназа → p53-стабилизация → p21-транскрипция → G1-арест.
+///
+/// Этот компонент закрывает петлю CDATA → клеточный цикл:
+/// - `p53_stabilization × 0.3` пишется в `GeneExpressionState.p21_level`
+/// - `cell_cycle_module` читает `p21_level` и применяет G1SRestriction
+///
+/// Связь с другими компонентами:
+/// - ROS (от `CentriolarDamageState`) вносит прямой вклад в γH2AX (окислительные разрывы)
+/// - Агрегаты снижают `dna_repair_capacity` (протеасомная нагрузка мешает NHEJ/HR)
+/// - Возраст снижает `dna_repair_capacity` (уменьшение MRN-комплекса, Ku70/Ku80)
+///
+/// Биологические ссылки:
+/// - Jackson & Bartek (2009): DNA-damage response in human biology — Nature
+/// - Rodier et al. (2009): Persistent DNA damage signalling — Nature Cell Biol
+/// - Bakkenist & Kastan (2003): DNA damage activates ATM — Nature
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DDRState {
+    /// Уровень γH2AX (маркер двунитевых разрывов ДНК) [0..1].
+    /// `= (1 − spindle_fidelity)^1.5 × 0.8 + ros_level × 0.2`
+    /// Spindle↓ → анеуплоидия → DSB; ROS→ окислительные разрывы (8-OHdG).
+    pub gamma_h2ax_level: f32,
+
+    /// Активность ATM-киназы [0..1].
+    /// `= gamma_h2ax_level × dna_repair_capacity`
+    /// ATM — главный сенсор DSB; активность ограничена ёмкостью репарации.
+    pub atm_activity: f32,
+
+    /// Стабилизация p53 [0..1].
+    /// `= atm_activity × 0.7`
+    /// ATM фосфорилирует MDM2, что стабилизирует p53 (снижает деградацию).
+    /// Высокий p53 → транскрипция p21 → G1-арест (антипролиферативный барьер).
+    pub p53_stabilization: f32,
+
+    /// Ёмкость репарации ДНК (NHEJ + HR) [0..1].
+    /// `= max(0.3, 1 − age_years/150 − aggregates × 0.2)`
+    /// Снижается с возрастом (уменьшение Ku70/Ku80, Rad51) и при перегрузке протеасомы.
+    /// Пол: 0.3 — минимальный уровень (репарация никогда полностью не отключается).
+    pub dna_repair_capacity: f32,
+}
+
+impl Default for DDRState {
+    fn default() -> Self {
+        Self {
+            gamma_h2ax_level:    0.0,
+            atm_activity:        0.0,
+            p53_stabilization:   0.0,
+            dna_repair_capacity: 1.0,
+        }
+    }
+}
+
+impl DDRState {
+    /// Обновить DDR-состояние на основе текущих повреждений и возраста.
+    ///
+    /// # Аргументы
+    /// * `spindle_fidelity` — `CentriolarDamageState::spindle_fidelity` [0..1]
+    /// * `ros_level`        — `CentriolarDamageState::ros_level` [0..1]
+    /// * `aggregates`       — `CentriolarDamageState::protein_aggregates` [0..1]
+    /// * `age_years`        — хронологический возраст (лет)
+    pub fn update(
+        &mut self,
+        spindle_fidelity: f32,
+        ros_level: f32,
+        aggregates: f32,
+        age_years: f32,
+    ) {
+        // ёмкость репарации: снижается с возрастом и перегрузкой агрегатами
+        self.dna_repair_capacity =
+            (1.0 - age_years / 150.0 - aggregates * 0.2).max(0.3);
+
+        // γH2AX: spindle↓ → хромосомная нестабильность → DSB; ROS → окислительные разрывы
+        let spindle_damage = (1.0 - spindle_fidelity).powf(1.5);
+        self.gamma_h2ax_level = (spindle_damage * 0.8 + ros_level * 0.2).clamp(0.0, 1.0);
+
+        // ATM: активируется DSB, ограничен ёмкостью репарации
+        self.atm_activity = (self.gamma_h2ax_level * self.dna_repair_capacity).clamp(0.0, 1.0);
+
+        // p53: стабилизируется ATM (фосфорилирование MDM2 → деградация MDM2↓)
+        self.p53_stabilization = (self.atm_activity * 0.7).clamp(0.0, 1.0);
+    }
+
+    /// Вычислить вклад p53 в p21 для передачи в `GeneExpressionState`.
+    ///
+    /// Возвращает значение, которое нужно **добавить** к `GeneExpressionState.p21_level`:
+    /// `p53_stabilization × 0.3` (максимальный вклад DDR в p21 = 0.3).
+    #[inline]
+    pub fn p21_contribution(&self) -> f32 {
+        self.p53_stabilization * 0.3
     }
 }
 
@@ -1076,6 +1669,52 @@ impl Default for ModulationState {
 /// При дисфункции митохондрий (мутации мтДНК, фрагментация, избыток ROS)
 /// щит ослабевает → больше O₂ проникает к центриолям → ускоряется
 /// отщепление индукторов.
+/// Клональное состояние стволовой ниши.
+///
+/// Каждая основательская ниша получает уникальный `clone_id` при инициализации.
+/// При симметричном делении (заполнение пустого слота пула) дочь наследует
+/// тот же `clone_id` и инкрементирует `generation`.
+///
+/// Используется для моделирования клонального гемопоэза (CHIP):
+/// клоны с более медленным истощением индукторов постепенно вытесняют
+/// стареющие линии — демографический дрейф без отбора по fitness.
+///
+/// Источник: «Centrioles as determinants» (2026-01-27) + Jaiswal et al. 2014 (CHIP).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClonalState {
+    /// Уникальный ID клональной линии (назначается при основании ниши, не меняется).
+    pub clone_id: u64,
+    /// Номер поколения от основателя (0 = основатель, 1 = первое дочернее, ...).
+    pub generation: u32,
+    /// Возраст организма (дни) на момент основания данной клональной линии.
+    pub founder_age_days: f64,
+}
+
+impl ClonalState {
+    /// Создать нового основателя.
+    pub fn founder(clone_id: u64) -> Self {
+        Self { clone_id, generation: 0, founder_age_days: 0.0 }
+    }
+
+    /// Создать клональную дочь (тот же clone_id, generation+1).
+    pub fn daughter(&self) -> Self {
+        Self {
+            clone_id: self.clone_id,
+            generation: self.generation + 1,
+            founder_age_days: self.founder_age_days,
+        }
+    }
+}
+
+/// Маркер для lazy-init HumanDevelopmentModule.
+///
+/// Добавляется `AsymmetricDivisionModule` при NichePool-спавне новой ниши.
+/// `HumanDevelopmentModule` обнаруживает его в начале `step()`, инициализирует
+/// `HumanDevelopmentComponent` и удаляет маркер.
+/// Это позволяет NichePool-заменам стареть как полноценные ниши.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NeedsHumanDevInit;
+
 ///
 /// # Петли обратной связи
 /// 1. `mtdna_mutations ↑` → `ros_production ↑` → `mtdna_mutations ↑` (цикл)
@@ -1127,5 +1766,188 @@ impl MitochondrialState {
     /// Масштаб задаётся параметром `ros_production_boost`.
     pub fn ros_boost(&self, ros_production_boost: f32) -> f32 {
         self.ros_production * ros_production_boost
+    }
+}
+
+
+#[cfg(test)]
+mod asymmetry_tests {
+    use super::*;
+
+    #[test]
+    fn test_blood_is_mother_to_stem() {
+        assert_eq!(TissueType::Blood.asymmetry_rule(), CentrioleAsymmetryRule::MotherToStem);
+    }
+
+    #[test]
+    fn test_neural_is_mother_to_stem() {
+        assert_eq!(TissueType::Neural.asymmetry_rule(), CentrioleAsymmetryRule::MotherToStem);
+    }
+
+    #[test]
+    fn test_epithelial_is_symmetric() {
+        assert_eq!(TissueType::Epithelial.asymmetry_rule(), CentrioleAsymmetryRule::Symmetric);
+    }
+
+    #[test]
+    fn test_mother_bias_blood_higher_than_skin() {
+        // HSC-ниша: старая мать → LT-HSC → больший mother_bias
+        let blood_bias = TissueType::Blood.default_mother_bias();
+        let skin_bias  = TissueType::Skin.default_mother_bias();
+        assert!(blood_bias > skin_bias,
+            "Blood mother_bias={} должен быть > Skin mother_bias={}", blood_bias, skin_bias);
+    }
+
+    #[test]
+    fn test_all_biases_in_valid_range() {
+        let tissues = [
+            TissueType::Neural, TissueType::Blood, TissueType::Epithelial,
+            TissueType::Muscle, TissueType::Skin,  TissueType::Germline,
+            TissueType::Connective, TissueType::Bone, TissueType::Cartilage,
+            TissueType::Adipose, TissueType::Liver, TissueType::Kidney,
+            TissueType::Heart, TissueType::Lung,
+        ];
+        for t in tissues {
+            let b = t.default_mother_bias();
+            assert!(b >= 0.0 && b <= 1.0,
+                "{:?}: mother_bias={} вне диапазона [0,1]", t, b);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Тесты морфогенных механизмов (P13)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod morphogen_tests {
+    use super::*;
+
+    /// GLI-активация: Hill-нелинейность (n=2, K=0.5)
+    #[test]
+    fn test_gli_activation_hill_nonlinearity() {
+        let mut dam = CentriolarDamageState::pristine();
+
+        // При полных ресничках (1.0) → GLI ≈ 0.80 (1.0² / (0.25 + 1.0) = 0.80)
+        dam.ciliary_function = 1.0;
+        let gli_full = dam.gli_activation();
+        assert!((gli_full - 0.80).abs() < 0.01,
+            "GLI при cilia=1.0 должен быть ≈0.80, получено {:.4}", gli_full);
+
+        // При EC50 (0.5) → GLI = 0.5
+        dam.ciliary_function = 0.5;
+        let gli_half = dam.gli_activation();
+        assert!((gli_half - 0.5).abs() < 0.01,
+            "GLI при cilia=0.5 (EC50) должен быть 0.5, получено {:.4}", gli_half);
+
+        // При нуле → GLI = 0
+        dam.ciliary_function = 0.0;
+        let gli_zero = dam.gli_activation();
+        assert_eq!(gli_zero, 0.0, "GLI при cilia=0 должен быть 0");
+
+        // Нелинейность: при cilia=0.3 ответ < 0.3 (порог работает)
+        dam.ciliary_function = 0.3;
+        let gli_low = dam.gli_activation();
+        assert!(gli_low < 0.3,
+            "Hill-нелинейность: GLI({:.1}) < {:.1} при n=2, K=0.5", gli_low, 0.3);
+    }
+
+    /// GLI строго монотонно растёт с ciliary_function
+    #[test]
+    fn test_gli_activation_monotone() {
+        let mut dam = CentriolarDamageState::pristine();
+        let mut prev = -1.0f32;
+        for i in 0..=10 {
+            dam.ciliary_function = i as f32 / 10.0;
+            let gli = dam.gli_activation();
+            assert!(gli >= prev, "GLI должен быть монотонно возрастающим");
+            assert!(gli >= 0.0 && gli <= 1.0, "GLI вне [0..1]: {}", gli);
+            prev = gli;
+        }
+    }
+
+    /// Старение (CEP164↓) → GLI резко падает из-за Hill-нелинейности
+    #[test]
+    fn test_gli_drops_faster_than_linear_with_cilia_loss() {
+        let mut dam = CentriolarDamageState::pristine();
+
+        dam.ciliary_function = 0.8;
+        let gli_80 = dam.gli_activation();
+
+        dam.ciliary_function = 0.2;
+        let gli_20 = dam.gli_activation();
+
+        // Линейный ответ: 0.2/0.8 = 0.25 (25% относительно 80%)
+        // Hill-ответ должен быть значительно меньше (нелинейный порог)
+        let ratio_gli = gli_20 / gli_80;
+        let ratio_linear = 0.2 / 0.8;
+        assert!(ratio_gli < ratio_linear,
+            "Hill-нелинейность: ratio_gli={:.3} должен быть < ratio_linear={:.3}",
+            ratio_gli, ratio_linear);
+    }
+
+    /// TissueState: морфогенные поля инициализируются в правильных диапазонах
+    #[test]
+    fn test_tissue_state_morphogen_fields_default() {
+        let ts = TissueState::new(TissueType::Blood);
+        assert!(ts.gli_activation >= 0.0 && ts.gli_activation <= 1.0);
+        assert!(ts.shh_concentration >= 0.0 && ts.shh_concentration <= 1.0);
+        assert!(ts.bmp_balance >= 0.0 && ts.bmp_balance <= 1.0);
+        assert!(ts.wnt_activity >= 0.0 && ts.wnt_activity <= 1.0);
+        // Молодая ткань: низкий BMP (Noggin преобладает)
+        assert!(ts.bmp_balance < 0.5,
+            "Молодая ткань должна иметь низкий bmp_balance, получено {}", ts.bmp_balance);
+    }
+
+    /// detail_level=1: только GLI, остальные поля не обновляются
+    #[test]
+    fn test_morphogen_detail_level_1_updates_only_gli() {
+        let mut ts = TissueState::new(TissueType::Blood);
+        // Установим необычные значения BMP/Wnt/Shh — они не должны меняться при level=1
+        ts.bmp_balance = 0.99;
+        ts.wnt_activity = 0.01;
+        ts.shh_concentration = 0.01;
+
+        ts.update_morphogen_fields(0.5, 1);
+
+        // GLI должен быть обновлён (cilia=0.5 → GLI=0.5)
+        assert!((ts.gli_activation - 0.5).abs() < 0.01,
+            "GLI должен быть обновлён при detail_level=1");
+        // BMP и Wnt — без изменений
+        assert!((ts.bmp_balance - 0.99).abs() < 0.01,
+            "bmp_balance не должен меняться при detail_level=1");
+        assert!((ts.wnt_activity - 0.01).abs() < 0.01,
+            "wnt_activity не должна меняться при detail_level=1");
+    }
+
+    /// detail_level=3: все поля обновляются
+    #[test]
+    fn test_morphogen_detail_level_3_updates_all() {
+        let mut ts = TissueState::new(TissueType::Blood);
+        ts.bmp_balance = 0.99;
+
+        ts.update_morphogen_fields(0.5, 3);
+
+        // При cilia=0.5 BMP-баланс должен снизиться (noggin_activity = 0.35 → bmp ≈ 0.52)
+        assert!(ts.bmp_balance < 0.99,
+            "bmp_balance должен обновиться при detail_level=3, получено {}", ts.bmp_balance);
+        assert!(ts.wnt_activity > 0.0 && ts.wnt_activity <= 1.0,
+            "wnt_activity должна быть в [0..1]");
+    }
+
+    /// С потерей ресничек BMP_balance растёт (Noggin ↓ → BMP ↑)
+    #[test]
+    fn test_bmp_increases_with_cilia_loss() {
+        let mut ts = TissueState::new(TissueType::Blood);
+
+        ts.update_morphogen_fields(1.0, 2);
+        let bmp_healthy = ts.bmp_balance;
+
+        ts.update_morphogen_fields(0.1, 2);
+        let bmp_damaged = ts.bmp_balance;
+
+        assert!(bmp_damaged > bmp_healthy,
+            "BMP-баланс должен расти при потере ресничек: {:.3} > {:.3}",
+            bmp_damaged, bmp_healthy);
     }
 }

@@ -463,7 +463,7 @@ impl DamagePreset {
 impl Default for CdataGuiConfig {
     fn default() -> Self {
         Self {
-            base_detach_probability: 0.002,
+            base_detach_probability: 0.0003,
             mother_bias: 0.6,
             age_bias_coefficient: 0.003,
             de_novo_centriole_division: 4,

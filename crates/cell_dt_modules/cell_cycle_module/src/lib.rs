@@ -120,22 +120,22 @@ impl CellCycleModule {
             let can_exit = match checkpoint {
                 Checkpoint::G1SRestriction => {
                     // Телометрный Хейфлика-арест — постоянный, выход невозможен
-                    if telomere.map_or(false, |t| t.is_critically_short) {
+                    if telomere.is_some_and(|t| t.is_critically_short) {
                         return false;
                     }
                     // Выход: И повреждения упали, И p21 снизился
-                    let damage_ok = damage.map_or(true, |d|
+                    let damage_ok = damage.is_none_or(|d|
                         d.total_damage_score() <= strictness || strictness == 0.0);
-                    let p21_ok = gene_expr.map_or(true, |g| g.p21_level <= 0.7);
+                    let p21_ok = gene_expr.is_none_or(|g| g.p21_level <= 0.7);
                     damage_ok && p21_ok
                 }
                 Checkpoint::DNARepair => {
                     // p16-сенесценция — выход только если p16 упал ниже 0.8
                     // (практически постоянный арест из-за высокой стабильности p16)
-                    gene_expr.map_or(true, |g| g.p16_level < 0.8)
+                    gene_expr.is_none_or(|g| g.p16_level < 0.8)
                 }
                 Checkpoint::SpindleAssembly | Checkpoint::G2MCheckpoint => {
-                    damage.map_or(true, |d| d.spindle_fidelity >= (1.0 - strictness))
+                    damage.is_none_or(|d| d.spindle_fidelity >= (1.0 - strictness))
                 }
             };
             if can_exit {

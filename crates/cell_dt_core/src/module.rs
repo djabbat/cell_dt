@@ -1,6 +1,31 @@
 use crate::{SimulationResult, hecs::World};
 use serde_json::Value;
 
+// ---------------------------------------------------------------------------
+// P12: Трейт автоматического CSV-экспорта
+// ---------------------------------------------------------------------------
+
+/// Трейт для автоматического сбора и записи CDATA-данных через [`SimulationManager`].
+///
+/// Имплементируется в `cell_dt_io::CdataExporter`. Хранится в `SimulationManager`
+/// и вызывается автоматически каждые N шагов.
+///
+/// # Пример (в `cell_dt_io`)
+/// ```ignore
+/// impl CdataCollect for CdataExporter {
+///     fn collect(&mut self, world: &World, step: u64) { ... }
+///     fn write_csv(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> { ... }
+/// }
+/// ```
+pub trait CdataCollect: Send {
+    /// Собрать снимок данных из ECS-мира на шаге `step`.
+    fn collect(&mut self, world: &World, step: u64);
+    /// Записать все собранные данные в CSV-файл.
+    fn write_csv(&self, path: &str) -> Result<(), Box<dyn std::error::Error>>;
+    /// Число записей в буфере.
+    fn buffered(&self) -> usize;
+}
+
 pub trait SimulationModule: Send + Sync {
     fn name(&self) -> &str;
     fn step(&mut self, world: &mut World, dt: f64) -> SimulationResult<()>;

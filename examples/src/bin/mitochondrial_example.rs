@@ -58,12 +58,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tissue_detail_level:     3,
         mother_inducer_count:    10,
         daughter_inducer_count:  8,
-        base_detach_probability: 0.002,
+        base_detach_probability: 0.0003,
         mother_bias:             0.5,
         age_bias_coefficient:    0.0,
         ptm_exhaustion_scale:    0.001,
         de_novo_centriole_division:   4,
         meiotic_elimination_enabled: true,
+        noise_scale:             0.0,
     };
     sim.register_module(Box::new(HumanDevelopmentModule::with_params(dev_params)))?;
     sim.register_module(Box::new(MyeloidShiftModule::new()))?;

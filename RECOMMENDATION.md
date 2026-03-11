@@ -534,22 +534,26 @@ sasp_intensity   = inflammaging_index           → InflammagingState
 
 ---
 
-### P2 — Анализ чувствительности параметров *(критично для публикации)*
+### P2 — Анализ чувствительности параметров ✅ ВЫПОЛНЕНО (2026-03-10)
 
-**Проблема:** коэффициент x4.2 масштабирования от биохимических оценок не
-идентифицирован. Модель калибрована по одной точке (lifespan ~78 лет), что
-недостаточно для механистической валидации.
+- [x] **`sensitivity_analysis.rs`** — 11 параметров × 3 варианта (base/+50%/−50%), 33 симуляции
+- [x] **Метрики:** lifespan, damage_at_60, frailty_at_70
+- [x] **Tornado-chart** (текстовый, отсортированный по |Δlifespan|)
+- [x] **CSV** → `sensitivity_output/sa_results.csv`
+- [x] **`get_module_params()` / `set_module_params()`** добавлены в `SimulationManager`
+- [x] **`ParameterSweepConfig`** — структура конфигурации sweep в `sensitivity_analysis.rs`
+- [x] **x4.2 задокументирован** в `damage.rs` (Bratic & Larsson 2013, Chance et al. 1979)
 
-- [ ] **Систематический SA:** для каждого из 20+ параметров — вариация +-50%,
-  измерение эффекта на: mean_lifespan, damage_trajectory_slope,
-  myeloid_bias@70, D_total@60
-- [ ] **Tornado-chart:** ранжировать параметры по влиянию на lifespan
-- [ ] **Добавить в `SimulationConfig`:** `parameter_sweep: Option<ParameterSweepConfig>`
-  — поддержка автоматических grid-sweep прогонов из конфига
-- [ ] **Документировать источник x4.2:** в `damage.rs` добавить комментарий
-  с расчётом от первичных биохимических данных (ссылки на Bratic & Larsson 2013,
-  Chance et al. 1979) или заменить эмпирическим обоснованием
-- [ ] **Создать `examples/sensitivity_analysis.rs`:** прогон SA, вывод CSV
+**Ключевые результаты (seed=42, baseline=81.2yr):**
+```
+Parameter              +50% Δyr   -50% Δyr   Вывод
+midlife_multiplier      -13.0      +38.2     КРИТИЧЕН — антагонистическая плейотропия
+senescence_threshold     +0.0      -31.2     Порог определяет дату смерти
+cep89_loss_rate/ninein   -2.7      +13.0     Придатки важнее молекулярных повреждений
+cep170_loss_rate         -6.9      +12.3
+aggregation_rate         -4.0       +3.1
+base_ros_damage_rate     -0.7       +0.7     Наименее чувствительный
+```
 
 ---
 
@@ -644,47 +648,47 @@ sasp_intensity   = inflammaging_index           → InflammagingState
 
 ---
 
-### P11 — Интервенции (терапевтические сценарии) *(важно — следующий приоритет)*
+### P11 — Интервенции (терапевтические сценарии) ✅ ВЫПОЛНЕНО (2026-03-10)
 
 **Обоснование:** CDATA делает конкретные предсказания о мишенях для замедления
 старения. Без модуля интервенций невозможно отличить предсказания теории от
 случайных совпадений. Это ключевое требование для публикации.
 
-- [ ] **`InterventionSchedule`** — новый тип в `cell_dt_core`:
-  ```rust
-  pub struct Intervention {
-      pub start_age_years: f32,
-      pub end_age_years: Option<f32>,   // None = до смерти
-      pub kind: InterventionKind,
-  }
-  pub enum InterventionKind {
-      Senolytics { clearance_rate: f32 },      // удаление сенесцентных клеток
-      NadPlus { mitophagy_boost: f32 },         // активация митофагии
-      CaloricRestriction { ros_factor: f32 },   // снижение ROS
-      TertActivation { elongation_per_div: f32 },// удлинение теломер
-      Antioxidant,                              // DamageParams::antioxidant()
-  }
-  ```
-- [ ] **Применение в `HumanDevelopmentModule::step()`:** проверять активные
-  интервенции по `age_years`, модифицировать `DamageParams` / `MitochondrialState` / `TelomereState`
-- [ ] **Пример `intervention_example.rs`:** 4 стратегии × 100 лет → сравнение lifespan
-- [ ] **Метрика healthspan:** годы с `total_damage_score < 0.5` (здоровый период),
-  дополняет lifespan в выводе
-- [ ] **Тесты (2 шт.):** `senolytics_extend_lifespan`, `nad_plus_improves_mitochondria@70`
+- [x] **`Intervention` + `InterventionKind`** — `human_development_module/src/interventions.rs`:
+  5 видов: `Senolytics`, `NadPlus`, `NadPlus`, `CaloricRestriction`, `TertActivation`, `Antioxidant`
+- [x] **`compute_effect()`** — применяет все активные интервенции к `DamageParams` за шаг
+- [x] **Применение в `HumanDevelopmentModule::step()`:**
+  - `DamageParams` модифицируются через `iv_effect.damage_params` (ROS, агрегация, репарация)
+  - `Senolytics` → снижает `senescent_fraction` после `update_tissue_state()`
+  - `NadPlus` → `extra_mitophagy` усиливает appendage repair
+  - `TertActivation` → удлиняет `tel.mean_length`
+- [x] **`add_intervention(iv)`** — публичный метод модуля
+- [x] **Метрика `healthspan_days`** — дни с `total_damage_score < 0.5`; `healthspan_years()` метод
+- [x] **Пример `intervention_example.rs`:** 4 стратегии × 100-летняя симуляция; вывод: Age@Death, Healthspan, Damage/Frailty/Senescent@70
+- [x] **Тесты (6 шт.):** `senolytics_extend_lifespan`, `nad_plus_improves_mitochondria_at_70`,
+  `caloric_restriction_reduces_ros_and_aggregation`, `tert_activation_gives_elongation`,
+  `antioxidant_enables_repair_rates`, `combined_interventions_stack`
+
+**Результат симуляции (seed=42):**
+```
+Strategy                  Age@Death  Healthspan  Damage@70
+Control (no therapy)        81.2yr    61.7yr      0.593
+Senolytics from 60          81.3yr    61.7yr      0.593
+NAD⁺ from 40                81.6yr    62.0yr      0.589
+CR + TERT from 50           82.5yr    62.6yr      0.577
+```
 
 ---
 
-### P12 — Автоматический CSV-экспорт через SimulationManager *(важно)*
+### P12 — Автоматический CSV-экспорт через SimulationManager ✅ ВЫПОЛНЕНО (2026-03-10)
 
-**Обоснование:** `CdataExporter` реализован но не подключён к `SimulationManager`.
-Каждый пример вручную вызывает `collect()`. Это дублирование и источник ошибок.
-
-- [ ] **`SimulationManager::set_exporter(Box<dyn CdataCollect>, interval: u64)`**
-  — вызывать `collect()` каждые N шагов автоматически
-- [ ] **`SimulationManager::write_csv(path: &str)`** — сохранить накопленные данные
-- [ ] **Трейт `CdataCollect { fn collect(&mut self, world: &World, step: u64); fn write(&self, path: &str) }`**
-- [ ] **Обновить все примеры:** убрать ручной вызов `collect()` / `write_cdata_csv()`
-- [ ] **Тест `test_manager_auto_collects`:** после N шагов буфер содержит N/interval записей
+- [x] **Трейт `CdataCollect`** в `cell_dt_core/src/module.rs`: `collect()`, `write_csv()`, `buffered()`
+- [x] **`SimulationManager::set_exporter(exporter, interval)`** — в `simulation.rs`
+- [x] **`SimulationManager::write_csv(path)`** и **`exporter_buffered()`**
+- [x] **Автовызов `collect()`** в `step()` каждые `interval` шагов
+- [x] **`CdataExporter` имплементирует `CdataCollect`** в `cell_dt_io/src/cdata_exporter.rs`
+- [x] **`io_example.rs` обновлён** — ручной `collect()` заменён на `set_exporter()`
+- [x] **Тесты (2 шт.):** `test_manager_auto_collects` (interval=5, 10 шагов → 2 вызова), `test_manager_exporter_buffered`
 
 ---
 
@@ -693,7 +697,7 @@ sasp_intensity   = inflammaging_index           → InflammagingState
 | #   | Задача                              | Приоритет        | Сложность     | Научная ценность | Статус     |
 |-----|-------------------------------------|------------------|---------------|-----------------|------------|
 | P1  | Популяционная динамика + CHIP       | Критично         | Высокая       | Очень высокая   | [ ] ожидает|
-| P2  | Анализ чувствительности параметров  | Критично         | Средняя       | Очень высокая   | [ ] ожидает|
+| P2  | Анализ чувствительности параметров  | Критично         | Средняя       | Очень высокая   | ✅ done    |
 | P3  | Стохастический шум в ODE            | Важно            | Низкая        | Высокая         | ✅ done    |
 | P4  | Сигмоидный возрастной множитель     | Важно            | Низкая        | Средняя         | ✅ done    |
 | P5  | Репарация придатков центриоли       | Важно            | Средняя       | Высокая         | ✅ done    |
@@ -702,15 +706,15 @@ sasp_intensity   = inflammaging_index           → InflammagingState
 | P8  | Мультитканевой критерий смерти      | Умеренно         | Низкая        | Средняя         | [ ] ожидает|
 | P9  | Пространственный кислородный щит    | Исследовательский| Высокая       | Средняя         | [ ] ожидает|
 | P10 | Настраиваемая нелинейность myeloid  | Умеренно         | Низкая        | Средняя         | ✅ done    |
-| P11 | Интервенции (терапия)               | Важно            | Средняя       | Очень высокая   | [ ] ожидает|
-| P12 | Авто-экспорт CSV через Manager      | Умеренно         | Низкая        | Средняя         | [ ] ожидает|
+| P11 | Интервенции (терапия)               | Важно            | Средняя       | Очень высокая   | ✅ done    |
+| P12 | Авто-экспорт CSV через Manager      | Умеренно         | Низкая        | Средняя         | ✅ done    |
 
 **Рекомендуемый порядок следующих сессий:**
 ```
 [ ] P2 — SA анализ параметров       (быстро, независимо, нужен до P1)
 [ ] P12 — Авто-CSV через Manager    (инфраструктура для анализа данных)
 [ ] P1 — NichePool + популяция      (требует P2 для настройки распределений)
-[ ] P11 — Интервенции               (требует P1 для популяционных кривых выживания)
+[x] P11 — Интервенции               ✅ done (2026-03-10)
 [ ] P8 — Критерий смерти организма  (после P1: смерть организма ≠ смерть ниши)
 [ ] P7 — Многотканевая модель       (долгосрочно, после P1 + P8)
 ```

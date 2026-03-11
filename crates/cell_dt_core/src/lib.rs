@@ -8,7 +8,7 @@ pub mod world;
 
 pub use components::*;
 pub use error::*;
-pub use module::*;
+pub use module::{SimulationModule, CdataCollect};
 pub use simulation::*;
 pub use world::*;
 

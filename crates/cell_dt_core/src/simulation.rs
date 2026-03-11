@@ -1,5 +1,6 @@
 use crate::{
     SimulationError, SimulationModule, SimulationResult,
+    CdataCollect,
     Dead,
     hecs::World,
 };
@@ -41,6 +42,9 @@ pub struct SimulationManager {
     config: SimulationConfig,
     current_step: u64,
     current_time: f64,
+    /// P12: Автоэкспортёр данных. `(exporter, interval_steps)`.
+    /// Если задан — `collect()` вызывается автоматически каждые `interval_steps` шагов.
+    exporter: Option<(Box<dyn CdataCollect>, u64)>,
 }
 
 impl SimulationManager {
@@ -62,7 +66,38 @@ impl SimulationManager {
             config,
             current_step: 0,
             current_time: 0.0,
+            exporter: None,
         }
+    }
+
+    /// P12: Подключить автоэкспортёр данных.
+    ///
+    /// После подключения `collect()` вызывается автоматически каждые `interval` шагов
+    /// в конце [`step()`]. Для записи в файл вызовите [`write_csv()`].
+    ///
+    /// # Пример
+    /// ```ignore
+    /// use cell_dt_io::CdataExporter;
+    /// sim.set_exporter(Box::new(CdataExporter::new("output", "run")), 365);
+    /// // ... запуск симуляции ...
+    /// sim.write_csv("output/result.csv").unwrap();
+    /// ```
+    pub fn set_exporter(&mut self, exporter: Box<dyn CdataCollect>, interval: u64) {
+        self.exporter = Some((exporter, interval));
+    }
+
+    /// P12: Записать все собранные данные в CSV-файл через подключённый экспортёр.
+    /// Возвращает ошибку если экспортёр не подключён.
+    pub fn write_csv(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        match &self.exporter {
+            Some((exp, _)) => exp.write_csv(path),
+            None => Err("No exporter set — call set_exporter() first".into()),
+        }
+    }
+
+    /// P12: Число записей в буфере экспортёра.
+    pub fn exporter_buffered(&self) -> usize {
+        self.exporter.as_ref().map_or(0, |(e, _)| e.buffered())
     }
 
     pub fn register_module(&mut self, module: Box<dyn SimulationModule>) -> SimulationResult<()> {
@@ -112,7 +147,7 @@ impl SimulationManager {
 
         // Периодическая очистка мёртвых сущностей (компонент Dead)
         if let Some(interval) = self.config.cleanup_dead_interval {
-            if interval > 0 && self.current_step % interval == 0 {
+            if interval > 0 && self.current_step.is_multiple_of(interval) {
                 let removed = self.cleanup_dead_entities();
                 if removed > 0 {
                     debug!("Cleanup step {}: удалено {} мёртвых сущностей", self.current_step, removed);
@@ -122,6 +157,13 @@ impl SimulationManager {
 
         self.current_step += 1;
         self.current_time += dt;
+
+        // P12: Автоматический сбор данных экспортёром (каждые interval шагов)
+        if let Some((exporter, interval)) = &mut self.exporter {
+            if *interval > 0 && self.current_step.is_multiple_of(*interval) {
+                exporter.collect(&self.world, self.current_step);
+            }
+        }
 
         Ok(())
     }
@@ -188,6 +230,28 @@ impl SimulationManager {
     /// Имена зарегистрированных модулей в порядке выполнения.
     pub fn module_names(&self) -> Vec<&str> {
         self.modules.iter().map(|(n, _)| n.as_str()).collect()
+    }
+
+    /// Получить параметры модуля по имени.
+    /// Возвращает `Err` если модуль не найден.
+    pub fn get_module_params(&self, name: &str) -> SimulationResult<serde_json::Value> {
+        self.modules.iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, m)| m.get_params())
+            .ok_or_else(|| SimulationError::ModuleError(
+                format!("Module '{}' not found", name)
+            ))
+    }
+
+    /// Установить параметры модуля по имени.
+    /// Возвращает `Err` если модуль не найден.
+    pub fn set_module_params(&mut self, name: &str, params: &serde_json::Value) -> SimulationResult<()> {
+        self.modules.iter_mut()
+            .find(|(n, _)| n == name)
+            .ok_or_else(|| SimulationError::ModuleError(
+                format!("Module '{}' not found", name)
+            ))
+            .and_then(|(_, m)| m.set_params(params))
     }
 }
 
@@ -305,5 +369,53 @@ mod tests {
         assert_eq!(removed, 0, "Без Dead-маркеров ничего не должно удаляться");
         assert!(sim.world().contains(entity1));
         assert!(sim.world().contains(entity2));
+    }
+
+    // --- P12: Автоэкспорт ---
+
+    /// Заглушка-экспортёр для тестирования: считает вызовы collect().
+    struct CountingExporter {
+        collect_count: std::sync::Arc<std::sync::Mutex<usize>>,
+    }
+
+    impl crate::module::CdataCollect for CountingExporter {
+        fn collect(&mut self, _world: &World, _step: u64) {
+            *self.collect_count.lock().unwrap() += 1;
+        }
+        fn write_csv(&self, _path: &str) -> Result<(), Box<dyn std::error::Error>> { Ok(()) }
+        fn buffered(&self) -> usize { *self.collect_count.lock().unwrap() }
+    }
+
+    #[test]
+    fn test_manager_auto_collects() {
+        // interval=5 → за 10 шагов должно быть ровно 2 вызова collect()
+        let count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let exporter = CountingExporter { collect_count: count.clone() };
+
+        let config = SimulationConfig { max_steps: 10, ..Default::default() };
+        let mut sim = SimulationManager::new(config);
+        sim.set_exporter(Box::new(exporter), 5);
+        sim.initialize().unwrap();
+
+        for _ in 0..10 { sim.step().unwrap(); }
+
+        let calls = *count.lock().unwrap();
+        assert_eq!(calls, 2,
+            "interval=5 за 10 шагов → 2 вызова collect(), получено {}", calls);
+    }
+
+    #[test]
+    fn test_manager_exporter_buffered() {
+        let count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let exporter = CountingExporter { collect_count: count.clone() };
+
+        let config = SimulationConfig { max_steps: 3, ..Default::default() };
+        let mut sim = SimulationManager::new(config);
+        sim.set_exporter(Box::new(exporter), 1);
+        sim.initialize().unwrap();
+
+        assert_eq!(sim.exporter_buffered(), 0, "до шагов буфер пуст");
+        sim.step().unwrap();
+        assert_eq!(sim.exporter_buffered(), 1, "после шага 1 вызов collect → buffered=1");
     }
 }

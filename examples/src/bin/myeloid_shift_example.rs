@@ -8,7 +8,7 @@
 //! 2. `CellCycleModule`       — фазы клеточного цикла
 //! 3. `HumanDevelopmentModule` — CDATA: накопление повреждений + O₂-индукторы
 //! 4. `MyeloidShiftModule`    — читает CentriolarDamageState, пишет myeloid_bias
-//!                             и InflammagingState (обратная связь на шаг N+1)
+//!    и InflammagingState (обратная связь на шаг N+1)
 //!
 //! ## Вывод каждые 10 лет
 //! ```
@@ -68,12 +68,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tissue_detail_level:     3,
         mother_inducer_count:    10,
         daughter_inducer_count:  8,
-        base_detach_probability: 0.002,
+        base_detach_probability: 0.0003,
         mother_bias:             0.5,   // одинаковая вероятность M и D
         age_bias_coefficient:    0.0,   // возраст не влияет
         ptm_exhaustion_scale:    0.001, // PTM-асимметрия → истощение матери
         de_novo_centriole_division:   4,    // 16-клеточная стадия (Морула)
         meiotic_elimination_enabled: true,
+        noise_scale:             0.0,
     };
     sim.register_module(Box::new(HumanDevelopmentModule::with_params(dev_params)))?;
 
